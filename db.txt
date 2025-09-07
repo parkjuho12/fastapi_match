@@ -1,0 +1,13 @@
+CREATE TABLE users (
+  user_id INT AUTO_INCREMENT PRIMARY KEY,
+  email VARCHAR(255) NOT NULL UNIQUE,
+  password_hash CHAR(64) NOT NULL,     -- SHA-256 해시 (HEX 64자)
+  salt CHAR(32) NOT NULL,              -- Salt (예: 16바이트를 HEX로 표현)
+  name VARCHAR(100) NOT NULL,
+  birth_date DATE NOT NULL,
+  gender ENUM('M', 'F') NOT NULL,
+  nationality VARCHAR(100) NOT NULL,
+  terms_agreed BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+//유저 정보 디비

@@ -1,0 +1,15 @@
+fastapi
+uvicorn
+pymysql
+cryptography
+passlib[bcrypt]
+python-jose[cryptography]
+python-multipart
+sqlalchemy
+python-dotenv
+aiosmtplib
+jinja2
+websockets
+pydantic[email]
+pillow
+aiofiles
