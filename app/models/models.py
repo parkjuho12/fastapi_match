@@ -23,6 +23,9 @@ class User(Base):
     timetables = relationship("Timetable", back_populates="user")
     profile = relationship("UserProfile", back_populates="user", uselist=False)
     notifications = relationship("Notification", back_populates="user")
+    blocked_users = relationship("UserBlock", foreign_keys="[UserBlock.blocker_id]", back_populates="blocker")
+    blocked_by = relationship("UserBlock", foreign_keys="[UserBlock.blocked_id]", back_populates="blocked")
+    notification_settings = relationship("UserNotificationSettings", back_populates="user", uselist=False)
     
     def __repr__(self):
         return f"<User(user_id={self.user_id}, email='{self.email}', name='{self.name}')>"
@@ -346,3 +349,277 @@ class Notification(Base):
     
     def __repr__(self):
         return f"<Notification(notification_id={self.notification_id}, user_id={self.user_id}, type='{self.notification_type}')>"
+
+# =============================================================================
+# 그룹/워크스페이스 시스템 테이블
+# =============================================================================
+
+class Group(Base):
+    """그룹/워크스페이스 테이블"""
+    __tablename__ = "groups"
+    
+    group_id = Column(Integer, primary_key=True, autoincrement=True)
+    group_name = Column(String(100), nullable=False)  # 그룹 이름
+    description = Column(String(500), nullable=True)  # 그룹 설명
+    created_by = Column(Integer, ForeignKey('users.user_id'), nullable=False)  # 생성자
+    is_public = Column(Boolean, nullable=False, default=True)  # 공개 여부
+    requires_approval = Column(Boolean, nullable=False, default=False)  # 가입 승인 필요 여부
+    max_members = Column(Integer, nullable=True)  # 최대 멤버 수 (None이면 제한 없음)
+    is_active = Column(Boolean, nullable=False, default=True)  # 활성 상태
+    created_at = Column(TIMESTAMP, default=func.current_timestamp())
+    updated_at = Column(TIMESTAMP, default=func.current_timestamp(), onupdate=func.current_timestamp())
+    
+    # 관계 설정
+    creator = relationship("User", foreign_keys=[created_by])
+    members = relationship("GroupMember", back_populates="group")
+    posts = relationship("GroupPost", back_populates="group")
+    gallery_images = relationship("GroupGallery", back_populates="group")
+    meetings = relationship("GroupMeeting", back_populates="group")
+    
+    def __repr__(self):
+        return f"<Group(group_id={self.group_id}, name='{self.group_name}')>"
+
+class GroupMember(Base):
+    """그룹 멤버 테이블"""
+    __tablename__ = "group_members"
+    
+    member_id = Column(Integer, primary_key=True, autoincrement=True)
+    group_id = Column(Integer, ForeignKey('groups.group_id'), nullable=False)
+    user_id = Column(Integer, ForeignKey('users.user_id'), nullable=False)
+    role = Column(Enum('owner', 'admin', 'member'), nullable=False, default='member')  # 역할
+    status = Column(Enum('pending', 'approved', 'rejected'), nullable=False, default='approved')  # 가입 상태
+    joined_at = Column(TIMESTAMP, default=func.current_timestamp())
+    left_at = Column(TIMESTAMP, nullable=True)  # 탈퇴 시간
+    is_active = Column(Boolean, nullable=False, default=True)  # 활성 상태
+    
+    # 관계 설정
+    group = relationship("Group", back_populates="members")
+    user = relationship("User")
+    
+    # 복합 유니크 키
+    __table_args__ = (
+        Index('idx_group_user', 'group_id', 'user_id', unique=True),
+    )
+    
+    def __repr__(self):
+        return f"<GroupMember(group_id={self.group_id}, user_id={self.user_id}, role='{self.role}')>"
+
+class GroupPost(Base):
+    """그룹 게시글 테이블"""
+    __tablename__ = "group_posts"
+    
+    post_id = Column(Integer, primary_key=True, autoincrement=True)
+    group_id = Column(Integer, ForeignKey('groups.group_id'), nullable=False)
+    author_id = Column(Integer, ForeignKey('users.user_id'), nullable=False)
+    title = Column(String(200), nullable=False)  # 제목
+    content = Column(String(5000), nullable=False)  # 내용
+    is_pinned = Column(Boolean, nullable=False, default=False)  # 고정 여부
+    is_deleted = Column(Boolean, nullable=False, default=False)  # 삭제 여부
+    created_at = Column(TIMESTAMP, default=func.current_timestamp())
+    updated_at = Column(TIMESTAMP, default=func.current_timestamp(), onupdate=func.current_timestamp())
+    
+    # 관계 설정
+    group = relationship("Group", back_populates="posts")
+    author = relationship("User")
+    comments = relationship("GroupPostComment", back_populates="post")
+    
+    # 인덱스
+    __table_args__ = (
+        Index('idx_group_post_created', 'group_id', 'created_at'),
+    )
+    
+    def __repr__(self):
+        return f"<GroupPost(post_id={self.post_id}, group_id={self.group_id}, title='{self.title}')>"
+
+class GroupPostComment(Base):
+    """그룹 게시글 댓글 테이블"""
+    __tablename__ = "group_post_comments"
+    
+    comment_id = Column(Integer, primary_key=True, autoincrement=True)
+    post_id = Column(Integer, ForeignKey('group_posts.post_id'), nullable=False)
+    author_id = Column(Integer, ForeignKey('users.user_id'), nullable=False)
+    content = Column(String(1000), nullable=False)  # 댓글 내용
+    parent_comment_id = Column(Integer, ForeignKey('group_post_comments.comment_id'), nullable=True)  # 대댓글
+    is_deleted = Column(Boolean, nullable=False, default=False)  # 삭제 여부
+    created_at = Column(TIMESTAMP, default=func.current_timestamp())
+    updated_at = Column(TIMESTAMP, default=func.current_timestamp(), onupdate=func.current_timestamp())
+    
+    # 관계 설정
+    post = relationship("GroupPost", back_populates="comments")
+    author = relationship("User")
+    parent_comment = relationship("GroupPostComment", remote_side=[comment_id])
+    
+    # 인덱스
+    __table_args__ = (
+        Index('idx_post_comment_created', 'post_id', 'created_at'),
+    )
+    
+    def __repr__(self):
+        return f"<GroupPostComment(comment_id={self.comment_id}, post_id={self.post_id})>"
+
+class GroupGallery(Base):
+    """그룹 갤러리 이미지 테이블"""
+    __tablename__ = "group_gallery"
+    
+    image_id = Column(Integer, primary_key=True, autoincrement=True)
+    group_id = Column(Integer, ForeignKey('groups.group_id'), nullable=False)
+    uploaded_by = Column(Integer, ForeignKey('users.user_id'), nullable=False)
+    image_url = Column(String(500), nullable=False)  # 이미지 URL
+    file_name = Column(String(255), nullable=False)  # 원본 파일명
+    file_size = Column(Integer, nullable=False)  # 파일 크기 (bytes)
+    description = Column(String(500), nullable=True)  # 설명
+    is_deleted = Column(Boolean, nullable=False, default=False)  # 삭제 여부
+    created_at = Column(TIMESTAMP, default=func.current_timestamp())
+    
+    # 관계 설정
+    group = relationship("Group", back_populates="gallery_images")
+    uploader = relationship("User")
+    
+    # 인덱스
+    __table_args__ = (
+        Index('idx_group_gallery_created', 'group_id', 'created_at'),
+    )
+    
+    def __repr__(self):
+        return f"<GroupGallery(image_id={self.image_id}, group_id={self.group_id})>"
+
+class GroupMeeting(Base):
+    """그룹 정기모임 테이블"""
+    __tablename__ = "group_meetings"
+    
+    meeting_id = Column(Integer, primary_key=True, autoincrement=True)
+    group_id = Column(Integer, ForeignKey('groups.group_id'), nullable=False)
+    created_by = Column(Integer, ForeignKey('users.user_id'), nullable=False)
+    title = Column(String(200), nullable=False)  # 모임 제목
+    description = Column(String(1000), nullable=True)  # 모임 설명
+    meeting_date = Column(DateTime, nullable=False)  # 모임 일시
+    location = Column(String(200), nullable=True)  # 장소
+    max_attendees = Column(Integer, nullable=True)  # 최대 참석자 수
+    is_deleted = Column(Boolean, nullable=False, default=False)  # 삭제 여부
+    created_at = Column(TIMESTAMP, default=func.current_timestamp())
+    updated_at = Column(TIMESTAMP, default=func.current_timestamp(), onupdate=func.current_timestamp())
+    
+    # 관계 설정
+    group = relationship("Group", back_populates="meetings")
+    creator = relationship("User", foreign_keys=[created_by])
+    attendees = relationship("GroupMeetingAttendee", back_populates="meeting")
+    
+    def __repr__(self):
+        return f"<GroupMeeting(meeting_id={self.meeting_id}, group_id={self.group_id}, title='{self.title}')>"
+
+class GroupMeetingAttendee(Base):
+    """그룹 정기모임 참석자 테이블"""
+    __tablename__ = "group_meeting_attendees"
+    
+    attendee_id = Column(Integer, primary_key=True, autoincrement=True)
+    meeting_id = Column(Integer, ForeignKey('group_meetings.meeting_id'), nullable=False)
+    user_id = Column(Integer, ForeignKey('users.user_id'), nullable=False)
+    status = Column(Enum('pending', 'attending', 'not_attending'), nullable=False, default='pending')  # 참석 상태
+    created_at = Column(TIMESTAMP, default=func.current_timestamp())
+    
+    # 관계 설정
+    meeting = relationship("GroupMeeting", back_populates="attendees")
+    user = relationship("User")
+    
+    # 복합 유니크 키
+    __table_args__ = (
+        Index('idx_meeting_user', 'meeting_id', 'user_id', unique=True),
+    )
+    
+    def __repr__(self):
+        return f"<GroupMeetingAttendee(meeting_id={self.meeting_id}, user_id={self.user_id})>"
+
+# =============================================================================
+# 매칭 시스템 테이블
+# =============================================================================
+
+class MatchingRequest(Base):
+    """매칭 요청 테이블"""
+    __tablename__ = "matching_requests"
+    
+    request_id = Column(Integer, primary_key=True, autoincrement=True)
+    requester_id = Column(Integer, ForeignKey('users.user_id'), nullable=False)  # 요청자
+    requested_id = Column(Integer, ForeignKey('users.user_id'), nullable=False)  # 요청받은 사람
+    status = Column(Enum('pending', 'accepted', 'rejected', 'cancelled'), nullable=False, default='pending')
+    created_at = Column(TIMESTAMP, default=func.current_timestamp())
+    updated_at = Column(TIMESTAMP, default=func.current_timestamp(), onupdate=func.current_timestamp())
+    
+    # 관계 설정
+    requester = relationship("User", foreign_keys=[requester_id])
+    requested = relationship("User", foreign_keys=[requested_id])
+    
+    # 복합 유니크 키 (같은 사람에게 중복 요청 방지)
+    __table_args__ = (
+        Index('idx_requester_requested', 'requester_id', 'requested_id', unique=True),
+    )
+    
+    def __repr__(self):
+        return f"<MatchingRequest(request_id={self.request_id}, requester_id={self.requester_id}, requested_id={self.requested_id})>"
+
+class FriendRelationship(Base):
+    """친구 관계 테이블"""
+    __tablename__ = "friend_relationships"
+    
+    relationship_id = Column(Integer, primary_key=True, autoincrement=True)
+    user1_id = Column(Integer, ForeignKey('users.user_id'), nullable=False)
+    user2_id = Column(Integer, ForeignKey('users.user_id'), nullable=False)
+    created_at = Column(TIMESTAMP, default=func.current_timestamp())
+    is_active = Column(Boolean, nullable=False, default=True)  # 관계 활성 상태
+    
+    # 관계 설정
+    user1 = relationship("User", foreign_keys=[user1_id])
+    user2 = relationship("User", foreign_keys=[user2_id])
+    
+    # 복합 유니크 키
+    __table_args__ = (
+        Index('idx_user1_user2', 'user1_id', 'user2_id', unique=True),
+    )
+    
+    def __repr__(self):
+        return f"<FriendRelationship(relationship_id={self.relationship_id}, user1_id={self.user1_id}, user2_id={self.user2_id})>"
+
+# =============================================================================
+# 사용자 차단 및 설정 테이블
+# =============================================================================
+
+class UserBlock(Base):
+    """사용자 차단 테이블"""
+    __tablename__ = "user_blocks"
+    
+    block_id = Column(Integer, primary_key=True, autoincrement=True)
+    blocker_id = Column(Integer, ForeignKey('users.user_id'), nullable=False)  # 차단한 사람
+    blocked_id = Column(Integer, ForeignKey('users.user_id'), nullable=False)  # 차단당한 사람
+    created_at = Column(TIMESTAMP, default=func.current_timestamp())
+    
+    # 관계 설정
+    blocker = relationship("User", foreign_keys=[blocker_id], back_populates="blocked_users")
+    blocked = relationship("User", foreign_keys=[blocked_id], back_populates="blocked_by")
+    
+    # 복합 유니크 키
+    __table_args__ = (
+        Index('idx_blocker_blocked', 'blocker_id', 'blocked_id', unique=True),
+    )
+    
+    def __repr__(self):
+        return f"<UserBlock(blocker_id={self.blocker_id}, blocked_id={self.blocked_id})>"
+
+class UserNotificationSettings(Base):
+    """사용자 알림 설정 테이블"""
+    __tablename__ = "user_notification_settings"
+    
+    setting_id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('users.user_id'), nullable=False, unique=True)
+    push_enabled = Column(Boolean, nullable=False, default=True)  # 푸시 알림 활성화
+    chat_notifications = Column(Boolean, nullable=False, default=True)  # 채팅 알림
+    timetable_notifications = Column(Boolean, nullable=False, default=True)  # 시간표 알림
+    match_notifications = Column(Boolean, nullable=False, default=True)  # 매칭 알림
+    system_notifications = Column(Boolean, nullable=False, default=True)  # 시스템 알림
+    reminder_notifications = Column(Boolean, nullable=False, default=True)  # 리마인더 알림
+    created_at = Column(TIMESTAMP, default=func.current_timestamp())
+    updated_at = Column(TIMESTAMP, default=func.current_timestamp(), onupdate=func.current_timestamp())
+    
+    # 관계 설정
+    user = relationship("User", back_populates="notification_settings")
+    
+    def __repr__(self):
+        return f"<UserNotificationSettings(user_id={self.user_id})>"

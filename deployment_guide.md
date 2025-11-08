@@ -28,7 +28,7 @@ export SMTP_USER=your_email@gmail.com
 export SMTP_PASSWORD=your_gmail_app_password
 export EMAIL_TEST_MODE=false
 ```
-
+    
 ## 🔧 .env 파일 방식 (권장)
 
 1. 프로젝트 루트에 `.env` 파일 생성:

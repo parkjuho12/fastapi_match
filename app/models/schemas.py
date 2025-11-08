@@ -660,3 +660,283 @@ class NotificationStatsResponse(BaseModel):
     total_count: int = Field(0, description="전체 알람 수")
     unread_count: int = Field(0, description="읽지 않은 알람 수")
     by_type: dict[str, int] = Field({}, description="타입별 알람 수")
+
+# =============================================================================
+# 그룹/워크스페이스 관련 스키마
+# =============================================================================
+
+class GroupBase(BaseModel):
+    group_name: str = Field(..., min_length=1, max_length=100, description="그룹 이름")
+    description: Optional[str] = Field(None, max_length=500, description="그룹 설명")
+    is_public: bool = Field(True, description="공개 여부")
+    requires_approval: bool = Field(False, description="가입 승인 필요 여부")
+    max_members: Optional[int] = Field(None, ge=1, description="최대 멤버 수")
+
+class GroupCreate(GroupBase):
+    pass
+
+class GroupUpdate(BaseModel):
+    group_name: Optional[str] = Field(None, min_length=1, max_length=100)
+    description: Optional[str] = Field(None, max_length=500)
+    is_public: Optional[bool] = None
+    requires_approval: Optional[bool] = None
+    max_members: Optional[int] = Field(None, ge=1)
+
+class GroupResponse(GroupBase):
+    group_id: int
+    created_by: int
+    creator_name: str = Field(..., description="생성자 이름")
+    is_active: bool
+    member_count: int = Field(0, description="멤버 수")
+    created_at: datetime
+    updated_at: datetime
+    
+    model_config = {"from_attributes": True}
+
+class GroupListResponse(BaseModel):
+    groups: List[GroupResponse] = Field([], description="그룹 목록")
+    total_count: int = Field(0, description="전체 그룹 수")
+
+class GroupMemberResponse(BaseModel):
+    member_id: int
+    group_id: int
+    user_id: int
+    user_name: str = Field(..., description="사용자 이름")
+    role: str
+    status: str
+    joined_at: datetime
+    
+    model_config = {"from_attributes": True}
+
+class GroupMemberListResponse(BaseModel):
+    members: List[GroupMemberResponse] = Field([], description="멤버 목록")
+    total_count: int = Field(0, description="전체 멤버 수")
+
+class GroupMemberRoleUpdate(BaseModel):
+    role: str = Field(..., description="역할 (owner, admin, member)")
+
+# 게시판 관련 스키마
+class GroupPostBase(BaseModel):
+    title: str = Field(..., min_length=1, max_length=200, description="제목")
+    content: str = Field(..., min_length=1, max_length=5000, description="내용")
+
+class GroupPostCreate(GroupPostBase):
+    pass
+
+class GroupPostUpdate(BaseModel):
+    title: Optional[str] = Field(None, min_length=1, max_length=200)
+    content: Optional[str] = Field(None, min_length=1, max_length=5000)
+
+class GroupPostResponse(GroupPostBase):
+    post_id: int
+    group_id: int
+    author_id: int
+    author_name: str = Field(..., description="작성자 이름")
+    is_pinned: bool
+    created_at: datetime
+    updated_at: datetime
+    comment_count: int = Field(0, description="댓글 수")
+    
+    model_config = {"from_attributes": True}
+
+class GroupPostListResponse(BaseModel):
+    posts: List[GroupPostResponse] = Field([], description="게시글 목록")
+    total_count: int = Field(0, description="전체 게시글 수")
+
+class GroupPostCommentBase(BaseModel):
+    content: str = Field(..., min_length=1, max_length=1000, description="댓글 내용")
+    parent_comment_id: Optional[int] = Field(None, description="부모 댓글 ID (대댓글)")
+
+class GroupPostCommentCreate(GroupPostCommentBase):
+    pass
+
+class GroupPostCommentUpdate(BaseModel):
+    content: Optional[str] = Field(None, min_length=1, max_length=1000)
+
+class GroupPostCommentResponse(GroupPostCommentBase):
+    comment_id: int
+    post_id: int
+    author_id: int
+    author_name: str = Field(..., description="작성자 이름")
+    created_at: datetime
+    updated_at: datetime
+    
+    model_config = {"from_attributes": True}
+
+class GroupPostCommentListResponse(BaseModel):
+    comments: List[GroupPostCommentResponse] = Field([], description="댓글 목록")
+    total_count: int = Field(0, description="전체 댓글 수")
+
+# 갤러리 관련 스키마
+class GroupGalleryResponse(BaseModel):
+    image_id: int
+    group_id: int
+    uploaded_by: int
+    uploader_name: str = Field(..., description="업로더 이름")
+    image_url: str
+    file_name: str
+    file_size: int
+    description: Optional[str] = None
+    created_at: datetime
+    
+    model_config = {"from_attributes": True}
+
+class GroupGalleryListResponse(BaseModel):
+    images: List[GroupGalleryResponse] = Field([], description="이미지 목록")
+    total_count: int = Field(0, description="전체 이미지 수")
+
+# 정기모임 관련 스키마
+class GroupMeetingBase(BaseModel):
+    title: str = Field(..., min_length=1, max_length=200, description="모임 제목")
+    description: Optional[str] = Field(None, max_length=1000, description="모임 설명")
+    meeting_date: datetime = Field(..., description="모임 일시")
+    location: Optional[str] = Field(None, max_length=200, description="장소")
+    max_attendees: Optional[int] = Field(None, ge=1, description="최대 참석자 수")
+
+class GroupMeetingCreate(GroupMeetingBase):
+    pass
+
+class GroupMeetingUpdate(BaseModel):
+    title: Optional[str] = Field(None, min_length=1, max_length=200)
+    description: Optional[str] = Field(None, max_length=1000)
+    meeting_date: Optional[datetime] = None
+    location: Optional[str] = Field(None, max_length=200)
+    max_attendees: Optional[int] = Field(None, ge=1)
+
+class GroupMeetingResponse(GroupMeetingBase):
+    meeting_id: int
+    group_id: int
+    created_by: int
+    creator_name: str = Field(..., description="생성자 이름")
+    attendee_count: int = Field(0, description="참석자 수")
+    created_at: datetime
+    updated_at: datetime
+    
+    model_config = {"from_attributes": True}
+
+class GroupMeetingListResponse(BaseModel):
+    meetings: List[GroupMeetingResponse] = Field([], description="모임 목록")
+    total_count: int = Field(0, description="전체 모임 수")
+
+class GroupMeetingAttendRequest(BaseModel):
+    status: str = Field(..., description="참석 상태 (pending, attending, not_attending)")
+
+# =============================================================================
+# 매칭 시스템 관련 스키마
+# =============================================================================
+
+class MatchingRecommendationResponse(BaseModel):
+    user_id: int
+    name: str
+    department: Optional[str] = None
+    mbti: Optional[str] = None
+    profile_images: List[UserImageResponse] = Field([], description="프로필 이미지들")
+    common_interests: List[str] = Field([], description="공통 관심사")
+    
+    model_config = {"from_attributes": True}
+
+class MatchingRecommendationListResponse(BaseModel):
+    recommendations: List[MatchingRecommendationResponse] = Field([], description="추천 목록")
+    total_count: int = Field(0, description="전체 추천 수")
+
+class MatchingRequestCreate(BaseModel):
+    requested_id: int = Field(..., description="요청받은 사용자 ID")
+
+class MatchingRequestResponse(BaseModel):
+    request_id: int
+    requester_id: int
+    requester_name: str = Field(..., description="요청자 이름")
+    requested_id: int
+    requested_name: str = Field(..., description="요청받은 사람 이름")
+    status: str
+    created_at: datetime
+    updated_at: datetime
+    
+    model_config = {"from_attributes": True}
+
+class MatchingRequestListResponse(BaseModel):
+    requests: List[MatchingRequestResponse] = Field([], description="요청 목록")
+    total_count: int = Field(0, description="전체 요청 수")
+
+class FriendResponse(BaseModel):
+    relationship_id: int
+    friend_id: int = Field(..., description="친구 사용자 ID")
+    friend_name: str = Field(..., description="친구 이름")
+    created_at: datetime
+    
+    model_config = {"from_attributes": True}
+
+class FriendListResponse(BaseModel):
+    friends: List[FriendResponse] = Field([], description="친구 목록")
+    total_count: int = Field(0, description="전체 친구 수")
+
+# =============================================================================
+# 사용자 관리 관련 스키마
+# =============================================================================
+
+class UserSearchResponse(BaseModel):
+    user_id: int
+    name: str
+    email: str
+    department: Optional[str] = None
+    profile_image: Optional[str] = Field(None, description="대표 프로필 이미지")
+    
+    model_config = {"from_attributes": True}
+
+class UserSearchListResponse(BaseModel):
+    users: List[UserSearchResponse] = Field([], description="검색 결과")
+    total_count: int = Field(0, description="전체 검색 결과 수")
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str = Field(..., description="현재 비밀번호")
+    new_password: str = Field(..., min_length=8, description="새 비밀번호 (최소 8자)")
+    
+    @field_validator('new_password')
+    @classmethod
+    def validate_new_password(cls, v):
+        if len(v) < 8:
+            raise ValueError('비밀번호는 최소 8자 이상이어야 합니다.')
+        
+        has_letter = any(c.isalpha() for c in v)
+        has_digit = any(c.isdigit() for c in v)
+        has_special = any(c in "!@#$%^&*()_+-=[]{}|;:,.<>?" for c in v)
+        
+        count = sum([has_letter, has_digit, has_special])
+        if count < 2:
+            raise ValueError('비밀번호는 영문, 숫자, 특수문자 중 2가지 이상을 포함해야 합니다.')
+        
+        return v
+
+class UserBlockResponse(BaseModel):
+    block_id: int
+    blocked_id: int
+    blocked_name: str = Field(..., description="차단된 사용자 이름")
+    created_at: datetime
+    
+    model_config = {"from_attributes": True}
+
+class UserBlockListResponse(BaseModel):
+    blocked_users: List[UserBlockResponse] = Field([], description="차단 목록")
+    total_count: int = Field(0, description="전체 차단 수")
+
+class UserNotificationSettingsResponse(BaseModel):
+    setting_id: int
+    user_id: int
+    push_enabled: bool
+    chat_notifications: bool
+    timetable_notifications: bool
+    match_notifications: bool
+    system_notifications: bool
+    reminder_notifications: bool
+    created_at: datetime
+    updated_at: datetime
+    
+    model_config = {"from_attributes": True}
+
+class UserNotificationSettingsUpdate(BaseModel):
+    push_enabled: Optional[bool] = None
+    chat_notifications: Optional[bool] = None
+    timetable_notifications: Optional[bool] = None
+    match_notifications: Optional[bool] = None
+    system_notifications: Optional[bool] = None
+    reminder_notifications: Optional[bool] = None
