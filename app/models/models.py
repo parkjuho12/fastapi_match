@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Date, Enum, Boolean, TIMESTAMP, DateTime, Time, ForeignKey, Index
+from sqlalchemy import Column, Integer, String, Date, Enum, Boolean, TIMESTAMP, DateTime, Time, ForeignKey, Index, Text, Float
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from app.models.database import Base
@@ -320,6 +320,29 @@ class UserImage(Base):
     def __repr__(self):
         return f"<UserImage(image_id={self.image_id}, user_id={self.user_id}, order={self.upload_order})>"
 
+
+class UserKeyword(Base):
+    """사용자 키워드 테이블"""
+    __tablename__ = "user_keywords"
+    
+    keyword_id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('users.user_id'), nullable=False)
+    keyword_type = Column(String(50), nullable=False)  # personality, hobby, ideal_type
+    keyword_value = Column(String(100), nullable=False)  # 키워드 값
+    created_at = Column(TIMESTAMP, default=func.current_timestamp())
+    
+    # 관계 설정
+    user = relationship("User")
+    
+    # 인덱스
+    __table_args__ = (
+        Index('idx_user_keyword', 'user_id', 'keyword_type'),
+    )
+    
+    def __repr__(self):
+        return f"<UserKeyword(keyword_id={self.keyword_id}, user_id={self.user_id}, type={self.keyword_type})>"
+
+
 # =============================================================================
 # 알람 시스템 테이블
 # =============================================================================
@@ -366,6 +389,25 @@ class Group(Base):
     requires_approval = Column(Boolean, nullable=False, default=False)  # 가입 승인 필요 여부
     max_members = Column(Integer, nullable=True)  # 최대 멤버 수 (None이면 제한 없음)
     is_active = Column(Boolean, nullable=False, default=True)  # 활성 상태
+    
+    # Phase 1 추가 필드
+    view_count = Column(Integer, nullable=False, default=0)  # 조회수
+    category = Column(String(50), nullable=True)  # 카테고리 (운동, 스터디, 맛집탐방, 게임, 친목, 문화, 기타)
+    tags = Column(Text, nullable=True)  # 태그 (JSON 형식으로 저장: ["#독서", "#자기계발"])
+    primary_image_url = Column(String(500), nullable=True)  # 대표 이미지 URL
+    
+    # 정규 모임 정보
+    is_regular = Column(Boolean, nullable=False, default=False)  # 정규 모임 여부
+    regular_weekday = Column(String(50), nullable=True)  # 정규 모임 요일 (JSON 배열: "[2,7]" = 화,일)
+    regular_time = Column(Time, nullable=True)  # 정규 모임 시간
+    regular_location = Column(String(200), nullable=True)  # 정규 모임 장소
+    
+    # 모임 규칙
+    rules = Column(Text, nullable=True)  # 모임 규칙 (JSON 배열)
+    
+    # 활동계획
+    activity_plan = Column(Text, nullable=True)  # 활동계획 (JSON 배열)
+    
     created_at = Column(TIMESTAMP, default=func.current_timestamp())
     updated_at = Column(TIMESTAMP, default=func.current_timestamp(), onupdate=func.current_timestamp())
     
@@ -375,6 +417,7 @@ class Group(Base):
     posts = relationship("GroupPost", back_populates="group")
     gallery_images = relationship("GroupGallery", back_populates="group")
     meetings = relationship("GroupMeeting", back_populates="group")
+    likes = relationship("GroupLike", back_populates="group")
     
     def __repr__(self):
         return f"<Group(group_id={self.group_id}, name='{self.group_name}')>"
@@ -413,6 +456,7 @@ class GroupPost(Base):
     author_id = Column(Integer, ForeignKey('users.user_id'), nullable=False)
     title = Column(String(200), nullable=False)  # 제목
     content = Column(String(5000), nullable=False)  # 내용
+    category = Column(String(50), nullable=True, default='일반')  # 카테고리 (공지/일반/질문/후기)
     is_pinned = Column(Boolean, nullable=False, default=False)  # 고정 여부
     is_deleted = Column(Boolean, nullable=False, default=False)  # 삭제 여부
     created_at = Column(TIMESTAMP, default=func.current_timestamp())
@@ -514,8 +558,9 @@ class GroupMeetingAttendee(Base):
     attendee_id = Column(Integer, primary_key=True, autoincrement=True)
     meeting_id = Column(Integer, ForeignKey('group_meetings.meeting_id'), nullable=False)
     user_id = Column(Integer, ForeignKey('users.user_id'), nullable=False)
-    status = Column(Enum('pending', 'attending', 'not_attending'), nullable=False, default='pending')  # 참석 상태
+    status = Column(Enum('attending', 'not_attending', 'maybe'), nullable=False, default='attending')  # 참석 상태
     created_at = Column(TIMESTAMP, default=func.current_timestamp())
+    updated_at = Column(TIMESTAMP, default=func.current_timestamp(), onupdate=func.current_timestamp())
     
     # 관계 설정
     meeting = relationship("GroupMeeting", back_populates="attendees")
@@ -603,6 +648,27 @@ class UserBlock(Base):
     def __repr__(self):
         return f"<UserBlock(blocker_id={self.blocker_id}, blocked_id={self.blocked_id})>"
 
+class GroupLike(Base):
+    """그룹 좋아요 테이블"""
+    __tablename__ = "group_likes"
+    
+    like_id = Column(Integer, primary_key=True, autoincrement=True)
+    group_id = Column(Integer, ForeignKey('groups.group_id'), nullable=False)
+    user_id = Column(Integer, ForeignKey('users.user_id'), nullable=False)
+    created_at = Column(TIMESTAMP, default=func.current_timestamp())
+    
+    # 관계 설정
+    group = relationship("Group", back_populates="likes")
+    user = relationship("User")
+    
+    # 복합 유니크 키 (한 사용자가 같은 그룹을 여러 번 좋아요 할 수 없음)
+    __table_args__ = (
+        Index('idx_group_user_like', 'group_id', 'user_id', unique=True),
+    )
+    
+    def __repr__(self):
+        return f"<GroupLike(group_id={self.group_id}, user_id={self.user_id})>"
+
 class UserNotificationSettings(Base):
     """사용자 알림 설정 테이블"""
     __tablename__ = "user_notification_settings"
@@ -623,3 +689,367 @@ class UserNotificationSettings(Base):
     
     def __repr__(self):
         return f"<UserNotificationSettings(user_id={self.user_id})>"
+
+class GroupEvent(Base):
+    """그룹 이벤트/정기모임 일정 테이블"""
+    __tablename__ = "group_events"
+    
+    event_id = Column(Integer, primary_key=True, autoincrement=True)
+    group_id = Column(Integer, ForeignKey('groups.group_id'), nullable=False)
+    title = Column(String(200), nullable=False)  # 이벤트 제목
+    description = Column(Text, nullable=True)  # 이벤트 설명
+    event_date = Column(Date, nullable=False)  # 이벤트 날짜
+    event_time = Column(Time, nullable=True)  # 이벤트 시간
+    location = Column(String(200), nullable=True)  # 장소
+    max_attendees = Column(Integer, nullable=True)  # 최대 참석자 수
+    is_mandatory = Column(Boolean, nullable=False, default=False)  # 필수 참석 여부
+    is_deleted = Column(Boolean, nullable=False, default=False)  # 삭제 여부
+    created_by = Column(Integer, ForeignKey('users.user_id'), nullable=False)
+    created_at = Column(TIMESTAMP, default=func.current_timestamp())
+    updated_at = Column(TIMESTAMP, default=func.current_timestamp(), onupdate=func.current_timestamp())
+    
+    # 관계 설정
+    group = relationship("Group", foreign_keys=[group_id])
+    creator = relationship("User", foreign_keys=[created_by])
+    attendances = relationship("GroupEventAttendance", back_populates="event")
+    
+    # 인덱스
+    __table_args__ = (
+        Index('idx_group_event_date', 'group_id', 'event_date'),
+    )
+    
+    def __repr__(self):
+        return f"<GroupEvent(event_id={self.event_id}, title='{self.title}')>"
+
+class GroupEventAttendance(Base):
+    """그룹 이벤트 참석 테이블"""
+    __tablename__ = "group_event_attendance"
+    
+    attendance_id = Column(Integer, primary_key=True, autoincrement=True)
+    event_id = Column(Integer, ForeignKey('group_events.event_id'), nullable=False)
+    user_id = Column(Integer, ForeignKey('users.user_id'), nullable=False)
+    status = Column(Enum('attending', 'not_attending', 'maybe'), nullable=False, default='attending')  # 참석 상태
+    created_at = Column(TIMESTAMP, default=func.current_timestamp())
+    updated_at = Column(TIMESTAMP, default=func.current_timestamp(), onupdate=func.current_timestamp())
+    
+    # 관계 설정
+    event = relationship("GroupEvent", back_populates="attendances")
+    user = relationship("User")
+    
+    # 복합 유니크 키 (한 사용자가 같은 이벤트에 여러 번 등록할 수 없음)
+    __table_args__ = (
+        Index('idx_event_user', 'event_id', 'user_id', unique=True),
+    )
+    
+    def __repr__(self):
+        return f"<GroupEventAttendance(event_id={self.event_id}, user_id={self.user_id}, status='{self.status}')>"
+
+class GalleryImageLike(Base):
+    """갤러리 이미지 좋아요 테이블"""
+    __tablename__ = "gallery_image_likes"
+    
+    like_id = Column(Integer, primary_key=True, autoincrement=True)
+    image_id = Column(Integer, ForeignKey('group_gallery.image_id'), nullable=False)
+    user_id = Column(Integer, ForeignKey('users.user_id'), nullable=False)
+    created_at = Column(TIMESTAMP, default=func.current_timestamp())
+    
+    # 관계 설정
+    image = relationship("GroupGallery")
+    user = relationship("User")
+    
+    # 복합 유니크 키
+    __table_args__ = (
+        Index('idx_image_user_like', 'image_id', 'user_id', unique=True),
+    )
+    
+    def __repr__(self):
+        return f"<GalleryImageLike(image_id={self.image_id}, user_id={self.user_id})>"
+
+class GalleryImageComment(Base):
+    """갤러리 이미지 댓글 테이블"""
+    __tablename__ = "gallery_image_comments"
+    
+    comment_id = Column(Integer, primary_key=True, autoincrement=True)
+    image_id = Column(Integer, ForeignKey('group_gallery.image_id'), nullable=False)
+    user_id = Column(Integer, ForeignKey('users.user_id'), nullable=False)
+    content = Column(Text, nullable=False)  # 댓글 내용
+    is_deleted = Column(Boolean, nullable=False, default=False)  # 삭제 여부
+    created_at = Column(TIMESTAMP, default=func.current_timestamp())
+    updated_at = Column(TIMESTAMP, default=func.current_timestamp(), onupdate=func.current_timestamp())
+    
+    # 관계 설정
+    image = relationship("GroupGallery")
+    user = relationship("User")
+    
+    # 인덱스
+    __table_args__ = (
+        Index('idx_image_comment_created', 'image_id', 'created_at'),
+    )
+    
+    def __repr__(self):
+        return f"<GalleryImageComment(comment_id={self.comment_id}, image_id={self.image_id})>"
+
+class GroupPostLike(Base):
+    """그룹 게시글 좋아요 테이블"""
+    __tablename__ = "group_post_likes"
+    
+    like_id = Column(Integer, primary_key=True, autoincrement=True)
+    post_id = Column(Integer, ForeignKey('group_posts.post_id'), nullable=False)
+    user_id = Column(Integer, ForeignKey('users.user_id'), nullable=False)
+    created_at = Column(TIMESTAMP, default=func.current_timestamp())
+    
+    # 관계 설정
+    post = relationship("GroupPost")
+    user = relationship("User")
+    
+    # 복합 유니크 키
+    __table_args__ = (
+        Index('idx_post_user_like', 'post_id', 'user_id', unique=True),
+    )
+    
+    def __repr__(self):
+        return f"<GroupPostLike(post_id={self.post_id}, user_id={self.user_id})>"
+
+class GroupPostImage(Base):
+    """그룹 게시글 이미지 테이블"""
+    __tablename__ = "group_post_images"
+    
+    image_id = Column(Integer, primary_key=True, autoincrement=True)
+    post_id = Column(Integer, ForeignKey('group_posts.post_id'), nullable=False)
+    image_url = Column(String(500), nullable=False)
+    file_name = Column(String(255), nullable=False)
+    file_size = Column(Integer, nullable=False)
+    display_order = Column(Integer, nullable=False, default=0)  # 표시 순서
+    is_deleted = Column(Boolean, nullable=False, default=False)
+    created_at = Column(TIMESTAMP, default=func.current_timestamp())
+    
+    # 관계 설정
+    post = relationship("GroupPost")
+    
+    # 인덱스
+    __table_args__ = (
+        Index('idx_post_image', 'post_id', 'display_order'),
+    )
+    
+    def __repr__(self):
+        return f"<GroupPostImage(image_id={self.image_id}, post_id={self.post_id})>"
+
+class GroupPostCommentLike(Base):
+    """그룹 게시글 댓글 좋아요 테이블"""
+    __tablename__ = "group_post_comment_likes"
+    
+    like_id = Column(Integer, primary_key=True, autoincrement=True)
+    comment_id = Column(Integer, ForeignKey('group_post_comments.comment_id'), nullable=False)
+    user_id = Column(Integer, ForeignKey('users.user_id'), nullable=False)
+    created_at = Column(TIMESTAMP, default=func.current_timestamp())
+    
+    # 관계 설정
+    comment = relationship("GroupPostComment")
+    user = relationship("User")
+    
+    # 복합 유니크 키
+    __table_args__ = (
+        Index('idx_comment_user_like', 'comment_id', 'user_id', unique=True),
+    )
+    
+    def __repr__(self):
+        return f"<GroupPostCommentLike(comment_id={self.comment_id}, user_id={self.user_id})>"
+
+
+# =============================================================================
+# 구해요 (구인구직) 관련 테이블
+# =============================================================================
+
+class RecruitPost(Base):
+    """구해요 게시글 테이블"""
+    __tablename__ = "recruit_posts"
+    
+    post_id = Column(Integer, primary_key=True, autoincrement=True)
+    author_id = Column(Integer, ForeignKey('users.user_id'), nullable=False)
+    title = Column(String(200), nullable=False)
+    content = Column(Text, nullable=False)
+    image_url = Column(String(500), nullable=True)
+    category = Column(String(50), nullable=False, default='전체')
+    tags = Column(Text, nullable=True)  # JSON 배열
+    headcount = Column(Integer, default=1)
+    deadline_at = Column(DateTime, nullable=True)
+    questions = Column(Text, nullable=True)  # JSON 배열
+    view_count = Column(Integer, default=0)
+    like_count = Column(Integer, default=0)
+    comment_count = Column(Integer, default=0)
+    is_closed = Column(Boolean, default=False)
+    is_deleted = Column(Boolean, default=False)
+    created_at = Column(TIMESTAMP, default=func.current_timestamp())
+    updated_at = Column(TIMESTAMP, default=func.current_timestamp(), onupdate=func.current_timestamp())
+    
+    # 관계 설정
+    author = relationship("User", foreign_keys=[author_id])
+    likes = relationship("RecruitPostLike", back_populates="post", cascade="all, delete-orphan")
+    comments = relationship("RecruitPostComment", back_populates="post", cascade="all, delete-orphan")
+    applications = relationship("RecruitApplication", back_populates="post", cascade="all, delete-orphan")
+    
+    def __repr__(self):
+        return f"<RecruitPost(post_id={self.post_id}, title='{self.title}')>"
+
+
+class RecruitPostLike(Base):
+    """구해요 게시글 좋아요 테이블"""
+    __tablename__ = "recruit_post_likes"
+    
+    like_id = Column(Integer, primary_key=True, autoincrement=True)
+    post_id = Column(Integer, ForeignKey('recruit_posts.post_id'), nullable=False)
+    user_id = Column(Integer, ForeignKey('users.user_id'), nullable=False)
+    created_at = Column(TIMESTAMP, default=func.current_timestamp())
+    
+    # 관계 설정
+    post = relationship("RecruitPost", back_populates="likes")
+    user = relationship("User")
+    
+    # 복합 유니크 키
+    __table_args__ = (
+        Index('idx_recruit_post_user_like', 'post_id', 'user_id', unique=True),
+    )
+    
+    def __repr__(self):
+        return f"<RecruitPostLike(post_id={self.post_id}, user_id={self.user_id})>"
+
+
+class RecruitPostComment(Base):
+    """구해요 게시글 댓글 테이블"""
+    __tablename__ = "recruit_post_comments"
+    
+    comment_id = Column(Integer, primary_key=True, autoincrement=True)
+    post_id = Column(Integer, ForeignKey('recruit_posts.post_id'), nullable=False)
+    author_id = Column(Integer, ForeignKey('users.user_id'), nullable=False)
+    content = Column(Text, nullable=False)
+    parent_comment_id = Column(Integer, ForeignKey('recruit_post_comments.comment_id'), nullable=True)
+    is_deleted = Column(Boolean, default=False)
+    created_at = Column(TIMESTAMP, default=func.current_timestamp())
+    updated_at = Column(TIMESTAMP, default=func.current_timestamp(), onupdate=func.current_timestamp())
+    
+    # 관계 설정
+    post = relationship("RecruitPost", back_populates="comments")
+    author = relationship("User")
+    parent = relationship("RecruitPostComment", remote_side=[comment_id], backref="replies")
+    
+    def __repr__(self):
+        return f"<RecruitPostComment(comment_id={self.comment_id}, post_id={self.post_id})>"
+
+
+class RecruitApplication(Base):
+    """구해요 지원서 테이블"""
+    __tablename__ = "recruit_applications"
+    
+    application_id = Column(Integer, primary_key=True, autoincrement=True)
+    post_id = Column(Integer, ForeignKey('recruit_posts.post_id'), nullable=False)
+    applicant_id = Column(Integer, ForeignKey('users.user_id'), nullable=False)
+    answers = Column(Text, nullable=False)  # JSON 배열
+    status = Column(String(20), default='pending')  # pending, accepted, rejected
+    is_read = Column(Boolean, default=False)
+    created_at = Column(TIMESTAMP, default=func.current_timestamp())
+    updated_at = Column(TIMESTAMP, default=func.current_timestamp(), onupdate=func.current_timestamp())
+    
+    # 관계 설정
+    post = relationship("RecruitPost", back_populates="applications")
+    applicant = relationship("User")
+    
+    # 복합 유니크 키 (중복 지원 방지)
+    __table_args__ = (
+        Index('idx_recruit_application_unique', 'post_id', 'applicant_id', unique=True),
+    )
+    
+    def __repr__(self):
+        return f"<RecruitApplication(application_id={self.application_id}, post_id={self.post_id})>"
+
+
+# =============================================================================
+# 장소 추천 (Place) 관련 테이블
+# =============================================================================
+
+class Place(Base):
+    """장소 테이블"""
+    __tablename__ = "places"
+    
+    place_id = Column(Integer, primary_key=True, autoincrement=True)
+    author_id = Column(Integer, ForeignKey('users.user_id'), nullable=False)
+    title = Column(String(200), nullable=False)
+    content = Column(Text, nullable=True)
+    address = Column(String(500), nullable=True)
+    category = Column(String(50), nullable=False, default='기타')
+    view_count = Column(Integer, default=0)
+    like_count = Column(Integer, default=0)
+    review_count = Column(Integer, default=0)
+    avg_rating = Column(Float, default=0.0)
+    is_deleted = Column(Boolean, default=False)
+    created_at = Column(TIMESTAMP, default=func.current_timestamp())
+    updated_at = Column(TIMESTAMP, default=func.current_timestamp(), onupdate=func.current_timestamp())
+    
+    # 관계 설정
+    author = relationship("User", foreign_keys=[author_id])
+    images = relationship("PlaceImage", back_populates="place", cascade="all, delete-orphan")
+    likes = relationship("PlaceLike", back_populates="place", cascade="all, delete-orphan")
+    reviews = relationship("PlaceReview", back_populates="place", cascade="all, delete-orphan")
+    
+    def __repr__(self):
+        return f"<Place(place_id={self.place_id}, title='{self.title}')>"
+
+
+class PlaceImage(Base):
+    """장소 이미지 테이블"""
+    __tablename__ = "place_images"
+    
+    image_id = Column(Integer, primary_key=True, autoincrement=True)
+    place_id = Column(Integer, ForeignKey('places.place_id'), nullable=False)
+    image_url = Column(String(500), nullable=False)
+    upload_order = Column(Integer, default=0)
+    created_at = Column(TIMESTAMP, default=func.current_timestamp())
+    
+    # 관계 설정
+    place = relationship("Place", back_populates="images")
+    
+    def __repr__(self):
+        return f"<PlaceImage(image_id={self.image_id}, place_id={self.place_id})>"
+
+
+class PlaceLike(Base):
+    """장소 좋아요 테이블"""
+    __tablename__ = "place_likes"
+    
+    like_id = Column(Integer, primary_key=True, autoincrement=True)
+    place_id = Column(Integer, ForeignKey('places.place_id'), nullable=False)
+    user_id = Column(Integer, ForeignKey('users.user_id'), nullable=False)
+    created_at = Column(TIMESTAMP, default=func.current_timestamp())
+    
+    # 관계 설정
+    place = relationship("Place", back_populates="likes")
+    user = relationship("User")
+    
+    # 복합 유니크 키
+    __table_args__ = (
+        Index('idx_place_user_like', 'place_id', 'user_id', unique=True),
+    )
+    
+    def __repr__(self):
+        return f"<PlaceLike(place_id={self.place_id}, user_id={self.user_id})>"
+
+
+class PlaceReview(Base):
+    """장소 리뷰 테이블"""
+    __tablename__ = "place_reviews"
+    
+    review_id = Column(Integer, primary_key=True, autoincrement=True)
+    place_id = Column(Integer, ForeignKey('places.place_id'), nullable=False)
+    author_id = Column(Integer, ForeignKey('users.user_id'), nullable=False)
+    rating = Column(Integer, nullable=False)  # 1-5
+    content = Column(Text, nullable=False)
+    visit_date = Column(Date, nullable=True)
+    is_deleted = Column(Boolean, default=False)
+    created_at = Column(TIMESTAMP, default=func.current_timestamp())
+    updated_at = Column(TIMESTAMP, default=func.current_timestamp(), onupdate=func.current_timestamp())
+    
+    # 관계 설정
+    place = relationship("Place", back_populates="reviews")
+    author = relationship("User")
+    
+    def __repr__(self):
+        return f"<PlaceReview(review_id={self.review_id}, place_id={self.place_id})>"

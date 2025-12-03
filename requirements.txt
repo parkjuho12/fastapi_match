@@ -13,3 +13,4 @@ websockets
 pydantic[email]
 pillow
 aiofiles
+python-dateutil

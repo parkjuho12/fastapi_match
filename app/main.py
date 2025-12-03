@@ -16,10 +16,16 @@ from app.models.database import get_db, create_tables
 from app.models.models import (
     User, EmailVerification, Subject, Timetable, TimetableSubject,
     ChatRoom, ChatParticipant, ChatMessage, MessageReaction,
-    UserProfile, UserImage, Notification,
-    Group, GroupMember, GroupPost, GroupPostComment, GroupGallery, GroupMeeting, GroupMeetingAttendee,
+    UserProfile, UserImage, UserKeyword, Notification,
+    Group, GroupMember, GroupPost, GroupPostComment, GroupGallery, GroupMeeting, GroupMeetingAttendee, GroupLike,
+    GroupEvent, GroupEventAttendance, GalleryImageLike, GalleryImageComment, GroupPostLike,
+    GroupPostImage, GroupPostCommentLike,
     MatchingRequest, FriendRelationship,
-    UserBlock, UserNotificationSettings
+    UserBlock, UserNotificationSettings,
+    # 구해요 관련 모델
+    RecruitPost, RecruitPostLike, RecruitPostComment, RecruitApplication,
+    # 장소 추천 관련 모델
+    Place, PlaceImage, PlaceLike, PlaceReview
 )
 from app.models.schemas import (
     UserCreate, UserResponse, UserLogin, Token, UserMeResponse, UserProfileUpdateRequest, UserProfileUpdate,
@@ -46,12 +52,24 @@ from app.models.schemas import (
     NotificationCreate, NotificationResponse, NotificationListResponse,
     NotificationMarkReadRequest, NotificationStatsResponse, NotificationTypeEnum,
     # 그룹/워크스페이스 관련 스키마
-    GroupCreate, GroupUpdate, GroupResponse, GroupListResponse,
+    GroupCreate, GroupUpdate, GroupResponse, GroupListResponse, GroupLikeResponse, GroupCategoryEnum, GroupCategoryListResponse,
     GroupMemberResponse, GroupMemberListResponse, GroupMemberRoleUpdate,
+    # 그룹 통계 관련 스키마
+    GroupStatsResponse, MemberGrowthResponse, MemberGrowthData, PostCategoryStatsResponse, PostCategoryStats,
     GroupPostCreate, GroupPostUpdate, GroupPostResponse, GroupPostListResponse,
     GroupPostCommentCreate, GroupPostCommentUpdate, GroupPostCommentResponse, GroupPostCommentListResponse,
     GroupGalleryResponse, GroupGalleryListResponse,
     GroupMeetingCreate, GroupMeetingUpdate, GroupMeetingResponse, GroupMeetingListResponse, GroupMeetingAttendRequest,
+    # 그룹 이벤트 관련 스키마
+    GroupEventCreate, GroupEventUpdate, GroupEventResponse, GroupEventListResponse,
+    GroupEventAttendanceCreate, GroupEventAttendanceResponse,
+    # 갤러리 좋아요/댓글 관련 스키마
+    GalleryImageLikeResponse, GalleryImageCommentCreate, GalleryImageCommentUpdate,
+    GalleryImageCommentResponse, GalleryImageCommentListResponse,
+    # 게시글 좋아요 관련 스키마
+    GroupPostLikeResponse,
+    # 게시글 이미지 & 댓글 좋아요 관련 스키마
+    GroupPostImageResponse, GroupPostCommentLikeResponse, GroupPostSearchResponse,
     # 매칭 시스템 관련 스키마
     MatchingRecommendationResponse, MatchingRecommendationListResponse,
     MatchingRequestCreate, MatchingRequestResponse, MatchingRequestListResponse,
@@ -59,7 +77,20 @@ from app.models.schemas import (
     # 사용자 관리 관련 스키마
     UserSearchResponse, UserSearchListResponse, PasswordChangeRequest,
     UserBlockResponse, UserBlockListResponse,
-    UserNotificationSettingsResponse, UserNotificationSettingsUpdate
+    UserNotificationSettingsResponse, UserNotificationSettingsUpdate,
+    # 구해요 관련 스키마
+    RecruitPostCreate, RecruitPostUpdate, RecruitPostResponse, RecruitPostListResponse,
+    RecruitPostLikeResponse, RecruitCommentCreate, RecruitCommentUpdate,
+    RecruitCommentResponse, RecruitCommentListResponse,
+    RecruitApplicationCreate, RecruitApplicationStatusUpdate,
+    RecruitApplicationResponse, RecruitApplicationListResponse,
+    MyRecruitApplicationResponse, MyRecruitApplicationListResponse,
+    RecruitImageUploadResponse, RecruitAnswerItem,
+    # 장소 추천 관련 스키마
+    PlaceCreate, PlaceUpdate, PlaceListItemResponse, PlaceListResponse,
+    PlaceDetailResponse, PlaceLikeResponse, PlaceImageResponse,
+    PlaceReviewCreate, PlaceReviewUpdate, PlaceReviewResponse, PlaceReviewListResponse,
+    MyPlaceReviewResponse, MyPlaceReviewListResponse, PlaceImageUploadResponse
 )
 from app.services.email_service import EmailService
 from app.services.image_service import ImageService
@@ -95,7 +126,6 @@ async def startup_event():
         # create_tables()에서 처리하지 않은 에러만 여기서 처리
         error_str = str(e)
         if "FOREIGN KEY" not in error_str and "2003" not in error_str:
-            print(f"❌ 데이터베이스 초기화 에러: {e}")
             import traceback
             traceback.print_exc()
 
@@ -163,7 +193,6 @@ async def request_email_verification(request: EmailVerificationRequest, db: Sess
         raise
     except Exception as e:
         db.rollback()
-        print(f"이메일 인증번호 발송 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -201,7 +230,6 @@ async def verify_email(request: EmailVerificationConfirm, db: Session = Depends(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"이메일 인증 확인 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="이메일 인증 확인 중 오류가 발생했습니다."
@@ -269,21 +297,18 @@ async def register(user: UserCreateWithVerification, db: Session = Depends(get_d
         db.commit()
         db.refresh(db_user)
         
-        print(f"✅ 회원가입 성공: {user.email}")
         return db_user
         
     except HTTPException:
         raise
     except IntegrityError as e:
         db.rollback()
-        print(f"회원가입 DB 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="이미 등록된 정보입니다."
         )
     except Exception as e:
         db.rollback()
-        print(f"회원가입 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -348,7 +373,6 @@ async def read_users_me(current_user: User = Depends(get_current_user), db: Sess
         return UserMeResponse(**response_data)
         
     except Exception as e:
-        print(f"사용자 정보 조회 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -369,7 +393,6 @@ async def logout(current_user: User = Depends(get_current_user)):
         }
         
     except Exception as e:
-        print(f"로그아웃 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="로그아웃 중 오류가 발생했습니다."
@@ -416,7 +439,6 @@ async def find_user_id(request: FindUserIdRequest, db: Session = Depends(get_db)
     except HTTPException:
         raise
     except Exception as e:
-        print(f"아이디 찾기 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="아이디 찾기 중 오류가 발생했습니다."
@@ -481,7 +503,6 @@ async def request_password_reset(request: PasswordResetRequest, db: Session = De
         raise
     except Exception as e:
         db.rollback()
-        print(f"비밀번호 재설정 요청 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -519,7 +540,6 @@ async def verify_reset_code(request: VerificationCodeRequest, db: Session = Depe
     except HTTPException:
         raise
     except Exception as e:
-        print(f"인증번호 확인 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="인증번호 확인 중 오류가 발생했습니다."
@@ -576,7 +596,6 @@ async def reset_password(request: PasswordResetConfirm, db: Session = Depends(ge
         raise
     except Exception as e:
         db.rollback()
-        print(f"비밀번호 재설정 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -602,8 +621,6 @@ async def create_subject(
         request_body = await request.body()
         request_data = json.loads(request_body.decode('utf-8'))
         
-        print(f"🔍 과목 생성 요청 데이터: {request_data}")
-        print(f"🔍 사용자 ID: {current_user.user_id}")
         
         # 수동으로 데이터 검증 및 처리
         subject_data = {
@@ -615,7 +632,6 @@ async def create_subject(
             'end_time': request_data.get('end_time', '')
         }
         
-        print(f"🔍 처리된 과목 데이터: {subject_data}")
         
         # 시간 형태 변환
         from datetime import time
@@ -627,7 +643,6 @@ async def create_subject(
         start_time = time.fromisoformat(start_time_str)
         end_time = time.fromisoformat(end_time_str)
         
-        print(f"🔍 변환된 시간: {start_time} - {end_time}")
         # 시간 겹침 검사
         existing_subject = db.query(Subject).filter(
             Subject.user_id == current_user.user_id,
@@ -637,9 +652,10 @@ async def create_subject(
         ).first()
         
         if existing_subject:
+            error_msg = f"해당 시간대에 이미 등록된 과목이 있습니다: {existing_subject.subject_name}"
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"해당 시간대에 이미 등록된 과목이 있습니다: {existing_subject.subject_name}"
+                detail=error_msg
             )
         
         # 새 과목 생성
@@ -663,7 +679,6 @@ async def create_subject(
         raise
     except Exception as e:
         db.rollback()
-        print(f"과목 생성 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -681,12 +696,11 @@ async def get_subjects(
         subjects = db.query(Subject).filter(Subject.user_id == current_user.user_id).all()
         return subjects
     except Exception as e:
-        print(f"과목 조회 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="과목 조회 중 오류가 발생했습니다."
+            detail=f"과목 조회 중 오류가 발생했습니다: {str(e)}"
         )
 
 @app.get("/subjects/{subject_id}", response_model=SubjectResponse)
@@ -712,7 +726,6 @@ async def get_subject(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"과목 상세 조회 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -770,7 +783,6 @@ async def update_subject(
         raise
     except Exception as e:
         db.rollback()
-        print(f"과목 수정 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -806,7 +818,6 @@ async def delete_subject(
         raise
     except Exception as e:
         db.rollback()
-        print(f"과목 삭제 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -845,7 +856,6 @@ async def create_timetable(
         
     except Exception as e:
         db.rollback()
-        print(f"시간표 생성 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -865,7 +875,6 @@ async def get_timetables(
         ).order_by(Timetable.year.desc(), Timetable.semester.desc()).all()
         return timetables
     except Exception as e:
-        print(f"시간표 조회 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -902,7 +911,6 @@ async def get_active_timetable(
             db.refresh(default_timetable)
             
             timetable = default_timetable
-            print(f"✅ 사용자 {current_user.user_id}에게 기본 시간표 생성됨: ID={timetable.timetable_id}")
         
         # 시간표에 연결된 과목들 조회
         timetable_subjects = db.query(TimetableSubject).filter(
@@ -948,7 +956,6 @@ async def get_active_timetable(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"활성 시간표 조회 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -1016,7 +1023,6 @@ async def add_subject_to_timetable(
         raise
     except Exception as e:
         db.rollback()
-        print(f"시간표 과목 추가 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -1066,7 +1072,6 @@ async def remove_subject_from_timetable(
         raise
     except Exception as e:
         db.rollback()
-        print(f"시간표 과목 제거 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -1089,13 +1094,11 @@ class ConnectionManager:
         if room_id not in self.active_connections:
             self.active_connections[room_id] = {}
         self.active_connections[room_id][user_id] = websocket
-        print(f"🔗 사용자 {user_id}가 채팅방 {room_id}에 연결되었습니다.")
     
     def disconnect(self, room_id: int, user_id: int):
         if room_id in self.active_connections:
             if user_id in self.active_connections[room_id]:
                 del self.active_connections[room_id][user_id]
-                print(f"❌ 사용자 {user_id}가 채팅방 {room_id}에서 연결 해제되었습니다.")
                 
                 # 방에 아무도 없으면 방 정보 삭제
                 if not self.active_connections[room_id]:
@@ -1106,23 +1109,14 @@ class ConnectionManager:
             await self.active_connections[room_id][user_id].send_text(message)
     
     async def broadcast_to_room(self, message: str, room_id: int, exclude_user: int = None):
-        print(f"🔊 브로드캐스트 시작 - 방 {room_id}, 제외할 사용자: {exclude_user}")
-        print(f"📋 현재 활성 연결: {self.active_connections}")
         
         if room_id in self.active_connections:
-            print(f"📍 방 {room_id}의 연결된 사용자들: {list(self.active_connections[room_id].keys())}")
             for user_id, websocket in self.active_connections[room_id].items():
                 if exclude_user is None or user_id != exclude_user:
                     try:
-                        print(f"📤 사용자 {user_id}에게 메시지 전송 중...")
                         await websocket.send_text(message)
-                        print(f"✅ 사용자 {user_id}에게 메시지 전송 완료")
-                    except Exception as e:
-                        print(f"❌ 메시지 전송 실패 (사용자 {user_id}): {e}")
-                else:
-                    print(f"⏭️ 사용자 {user_id} 제외됨")
-        else:
-            print(f"❌ 방 {room_id}이 활성 연결에 없음")
+                    except Exception:
+                        pass
 
 # 전역 연결 관리자
 manager = ConnectionManager()
@@ -1174,25 +1168,19 @@ async def websocket_endpoint(
             "content": f"{user.name}님이 입장하셨습니다.",
             "timestamp": datetime.now().isoformat()
         }
-        print(f"📢 입장 알림 전송 시도: {join_message}")
         try:
             await manager.broadcast_to_room(json.dumps(join_message), room_id, user.user_id)
-            print(f"✅ 입장 알림 전송 완료")
-        except Exception as broadcast_error:
-            print(f"❌ 입장 알림 전송 실패: {broadcast_error}")
+        except Exception:
+            pass
         
-        print(f"🔄 메시지 수신 루프 시작 - 사용자 {user.user_id}")
         while True:
             try:
                 # 메시지 수신 (타임아웃 없이 대기)
-                print(f"⏳ 메시지 대기 중... - 사용자 {user.user_id}")
                 data = await websocket.receive_text()
-                print(f"📨 받은 메시지: {data}")
                 
                 try:
                     message_data = json.loads(data)
                 except json.JSONDecodeError as e:
-                    print(f"❌ JSON 파싱 에러: {e}")
                     await websocket.send_text(json.dumps({
                         "type": "error",
                         "message": "잘못된 메시지 형식입니다."
@@ -1201,7 +1189,6 @@ async def websocket_endpoint(
                 
                 if message_data.get("type") == "heartbeat":
                     # 하트비트 응답
-                    print(f"💓 하트비트 수신 - 사용자 {user.user_id}")
                     await websocket.send_text(json.dumps({
                         "type": "heartbeat_response",
                         "timestamp": datetime.now().isoformat()
@@ -1209,7 +1196,6 @@ async def websocket_endpoint(
                     continue
                 
                 elif message_data.get("type") == "message":
-                    print(f"💬 메시지 처리 중: {message_data}")
                     
                     # 메시지를 데이터베이스에 저장
                     try:
@@ -1226,9 +1212,7 @@ async def websocket_endpoint(
                         db.add(new_message)
                         db.commit()
                         db.refresh(new_message)
-                        print(f"✅ 메시지 저장 완료: {new_message.message_id}")
                     except Exception as db_error:
-                        print(f"❌ 데이터베이스 저장 에러: {db_error}")
                         db.rollback()
                         await websocket.send_text(json.dumps({
                             "type": "error",
@@ -1267,9 +1251,8 @@ async def websocket_endpoint(
                             "timestamp": new_message.created_at.isoformat()
                         }
                         await manager.broadcast_to_room(json.dumps(broadcast_message), room_id)
-                        print(f"📢 메시지 브로드캐스트 완료")
-                    except Exception as broadcast_error:
-                        print(f"❌ 브로드캐스트 에러: {broadcast_error}")
+                    except Exception:
+                        pass
                 
                 elif message_data.get("type") == "typing":
                     # 타이핑 상태 브로드캐스트
@@ -1282,20 +1265,16 @@ async def websocket_endpoint(
                             "timestamp": datetime.now().isoformat()
                         }
                         await manager.broadcast_to_room(json.dumps(typing_message), room_id, user.user_id)
-                        print(f"⌨️ 타이핑 상태 브로드캐스트 완료")
-                    except Exception as typing_error:
-                        print(f"❌ 타이핑 브로드캐스트 에러: {typing_error}")
+                    except Exception:
+                        pass
                         
             except WebSocketDisconnect:
-                print("🔌 WebSocket 연결이 정상적으로 끊어졌습니다.")
                 break
             except Exception as message_error:
-                print(f"❌ 메시지 처리 에러: {message_error}")
                 import traceback
                 traceback.print_exc()
                 # RuntimeError가 발생하면 연결이 끊어진 것이므로 루프 종료
                 if "Cannot call \"receive\" once a disconnect message has been received" in str(message_error):
-                    print("🔌 WebSocket 연결이 끊어져서 루프를 종료합니다.")
                     break
                 # 다른 에러는 계속 진행
                 
@@ -1313,7 +1292,6 @@ async def websocket_endpoint(
             }
             await manager.broadcast_to_room(json.dumps(leave_message), room_id)
     except Exception as e:
-        print(f"WebSocket 에러: {e}")
         import traceback
         traceback.print_exc()
         if user:  # user가 정의된 경우에만 실행
@@ -1372,7 +1350,6 @@ async def create_chat_room(
         
     except Exception as e:
         db.rollback()
-        print(f"채팅방 생성 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -1427,6 +1404,26 @@ async def get_chat_rooms(
                     ChatMessage.is_deleted == False
                 ).count()
             
+            # 1:1 채팅일 경우 상대방 정보 조회
+            other_user_id = None
+            other_user_name = None
+            other_user_profile_image = None
+            
+            if room.room_type == 'direct':
+                # 나를 제외한 상대방 찾기
+                other_participant = db.query(ChatParticipant).join(User).filter(
+                    ChatParticipant.room_id == room.room_id,
+                    ChatParticipant.user_id != current_user.user_id,
+                    ChatParticipant.is_active == True
+                ).first()
+                
+                if other_participant:
+                    other_user = db.query(User).filter(User.user_id == other_participant.user_id).first()
+                    if other_user:
+                        other_user_id = other_user.user_id
+                        other_user_name = other_user.name
+                        other_user_profile_image = other_user.profile_image
+            
             room_response = ChatRoomResponse(
                 room_id=room.room_id,
                 room_name=room.room_name,
@@ -1437,7 +1434,10 @@ async def get_chat_rooms(
                 updated_at=room.updated_at,
                 participant_count=participant_count,
                 last_message=last_message.message_content if last_message else None,
-                unread_count=unread_count
+                unread_count=unread_count,
+                other_user_id=other_user_id,
+                other_user_name=other_user_name,
+                other_user_profile_image=other_user_profile_image
             )
             rooms_response.append(room_response)
         
@@ -1447,7 +1447,6 @@ async def get_chat_rooms(
         )
         
     except Exception as e:
-        print(f"채팅방 목록 조회 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -1552,7 +1551,6 @@ async def get_chat_messages(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"채팅 메시지 조회 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -1600,7 +1598,6 @@ async def get_onboarding_progress(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"온보딩 진행상황 조회 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -1693,7 +1690,6 @@ async def save_onboarding_data(
         raise
     except Exception as e:
         db.rollback()
-        print(f"온보딩 데이터 저장 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -1762,7 +1758,6 @@ async def upload_profile_images(
         raise
     except Exception as e:
         db.rollback()
-        print(f"이미지 업로드 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -1822,7 +1817,6 @@ async def delete_profile_image(
         raise
     except Exception as e:
         db.rollback()
-        print(f"이미지 삭제 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -1898,7 +1892,6 @@ async def set_primary_image(
         raise
     except Exception as e:
         db.rollback()
-        print(f"대표 이미지 설정 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -1973,7 +1966,6 @@ async def complete_onboarding(
         raise
     except Exception as e:
         db.rollback()
-        print(f"온보딩 완료 처리 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -2035,7 +2027,6 @@ async def get_user_profile(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"프로필 조회 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -2083,7 +2074,6 @@ async def update_user_profile(
         raise
     except Exception as e:
         db.rollback()
-        print(f"개인정보 수정 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -2131,7 +2121,6 @@ async def get_onboarding_profile(
         }
         
     except Exception as e:
-        print(f"온보딩 프로필 조회 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -2185,7 +2174,6 @@ async def get_user_onboarding_profile(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"온보딩 프로필 조회 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -2207,8 +2195,6 @@ async def update_onboarding_profile(
         request_body = await request.body()
         request_data = json.loads(request_body.decode('utf-8'))
         
-        print(f"🔍 원시 요청 데이터: {request_data}")
-        print(f"🔍 사용자 ID: {current_user.user_id}")
         
         # 수동으로 데이터 검증 및 처리
         profile_data = {
@@ -2224,7 +2210,6 @@ async def update_onboarding_profile(
             'friend_style_keywords': request_data.get('friend_style_keywords', [])
         }
         
-        print(f"🔍 처리된 프로필 데이터: {profile_data}")
         
         # 기존 프로필 조회
         existing_profile = db.query(UserProfile).filter(UserProfile.user_id == current_user.user_id).first()
@@ -2288,7 +2273,6 @@ async def update_onboarding_profile(
         raise
     except Exception as e:
         db.rollback()
-        print(f"프로필 수정 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -2366,7 +2350,6 @@ async def update_onboarding_profile(
         
     except Exception as e:
         db.rollback()
-        print(f"온보딩 프로필 저장 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -2415,7 +2398,6 @@ async def get_notifications(
         )
         
     except Exception as e:
-        print(f"알람 목록 조회 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -2457,7 +2439,6 @@ async def get_notification_stats(
         )
         
     except Exception as e:
-        print(f"알람 통계 조회 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -2492,7 +2473,6 @@ async def mark_notifications_read(
         
     except Exception as e:
         db.rollback()
-        print(f"알람 읽음 처리 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -2525,7 +2505,6 @@ async def mark_all_notifications_read(
         
     except Exception as e:
         db.rollback()
-        print(f"전체 알람 읽음 처리 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -2563,7 +2542,6 @@ async def delete_notification(
         raise
     except Exception as e:
         db.rollback()
-        print(f"알람 삭제 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -2594,12 +2572,10 @@ def create_notification(
         db.commit()
         db.refresh(notification)
         
-        print(f"✅ 알람 생성: 사용자 {user_id}에게 '{title}' 알람 발송")
         return notification
         
     except Exception as e:
         db.rollback()
-        print(f"❌ 알람 생성 에러: {e}")
         return None
 
 # =============================================================================
@@ -2643,7 +2619,6 @@ async def upload_chat_file(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"파일 업로드 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -2738,7 +2713,6 @@ async def add_message_reaction(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"메시지 반응 추가 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -2803,7 +2777,6 @@ async def remove_message_reaction(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"메시지 반응 제거 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="메시지 반응 제거 중 오류가 발생했습니다."
@@ -2866,7 +2839,6 @@ async def get_message_reactions(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"메시지 반응 조회 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="메시지 반응 조회 중 오류가 발생했습니다."
@@ -2972,7 +2944,6 @@ async def search_messages(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"메시지 검색 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -3036,7 +3007,6 @@ async def get_chat_room_settings(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"채팅방 설정 조회 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="채팅방 설정 조회 중 오류가 발생했습니다."
@@ -3104,7 +3074,6 @@ async def update_chat_room_settings(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"채팅방 설정 업데이트 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="채팅방 설정 업데이트 중 오류가 발생했습니다."
@@ -3171,7 +3140,6 @@ async def create_scheduled_message(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"예약 메시지 생성 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="예약 메시지 생성 중 오류가 발생했습니다."
@@ -3230,7 +3198,6 @@ async def get_room_participants_status(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"온라인 상태 조회 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="온라인 상태 조회 중 오류가 발생했습니다."
@@ -3344,7 +3311,6 @@ async def upload_user_images(
         raise
     except Exception as e:
         db.rollback()
-        print(f"이미지 업로드 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -3395,7 +3361,6 @@ async def get_user_profile_images(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"이미지 목록 조회 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="이미지 목록 조회 중 오류가 발생했습니다."
@@ -3454,7 +3419,6 @@ async def delete_user_profile_image(
         raise
     except Exception as e:
         db.rollback()
-        print(f"이미지 삭제 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="이미지 삭제 중 오류가 발생했습니다."
@@ -3512,7 +3476,6 @@ async def set_primary_image(
         raise
     except Exception as e:
         db.rollback()
-        print(f"대표 이미지 설정 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="대표 이미지 설정 중 오류가 발생했습니다."
@@ -3566,7 +3529,6 @@ async def update_timetable(
         raise
     except Exception as e:
         db.rollback()
-        print(f"시간표 수정 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="시간표 수정 중 오류가 발생했습니다."
@@ -3606,7 +3568,6 @@ async def delete_timetable(
         raise
     except Exception as e:
         db.rollback()
-        print(f"시간표 삭제 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="시간표 삭제 중 오류가 발생했습니다."
@@ -3658,7 +3619,6 @@ async def get_timetable_subjects(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"시간표 과목 조회 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="시간표 과목 조회 중 오류가 발생했습니다."
@@ -3742,7 +3702,6 @@ async def create_chat_message(
         raise
     except Exception as e:
         db.rollback()
-        print(f"메시지 전송 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="메시지 전송 중 오류가 발생했습니다."
@@ -3819,7 +3778,6 @@ async def update_chat_message(
         raise
     except Exception as e:
         db.rollback()
-        print(f"메시지 수정 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="메시지 수정 중 오류가 발생했습니다."
@@ -3856,7 +3814,6 @@ async def delete_chat_message(
         raise
     except Exception as e:
         db.rollback()
-        print(f"메시지 삭제 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="메시지 삭제 중 오류가 발생했습니다."
@@ -3925,7 +3882,6 @@ async def update_chat_room(
         raise
     except Exception as e:
         db.rollback()
-        print(f"채팅방 수정 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="채팅방 수정 중 오류가 발생했습니다."
@@ -3963,7 +3919,6 @@ async def leave_chat_room(
         raise
     except Exception as e:
         db.rollback()
-        print(f"채팅방 나가기 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="채팅방 나가기 중 오류가 발생했습니다."
@@ -4003,7 +3958,6 @@ async def delete_chat_room(
         raise
     except Exception as e:
         db.rollback()
-        print(f"채팅방 삭제 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="채팅방 삭제 중 오류가 발생했습니다."
@@ -4075,7 +4029,6 @@ async def add_chat_participant(
         raise
     except Exception as e:
         db.rollback()
-        print(f"참여자 추가 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="참여자 추가 중 오류가 발생했습니다."
@@ -4128,7 +4081,6 @@ async def remove_chat_participant(
         raise
     except Exception as e:
         db.rollback()
-        print(f"참여자 제거 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="참여자 제거 중 오류가 발생했습니다."
@@ -4186,7 +4138,6 @@ async def search_users(
         )
         
     except Exception as e:
-        print(f"사용자 검색 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="사용자 검색 중 오류가 발생했습니다."
@@ -4224,7 +4175,6 @@ async def change_password(
         raise
     except Exception as e:
         db.rollback()
-        print(f"비밀번호 변경 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="비밀번호 변경 중 오류가 발생했습니다."
@@ -4250,7 +4200,6 @@ async def delete_account(
         
     except Exception as e:
         db.rollback()
-        print(f"계정 탈퇴 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="계정 탈퇴 중 오류가 발생했습니다."
@@ -4304,7 +4253,6 @@ async def block_user(
         raise
     except Exception as e:
         db.rollback()
-        print(f"사용자 차단 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="사용자 차단 중 오류가 발생했습니다."
@@ -4338,7 +4286,6 @@ async def unblock_user(
         raise
     except Exception as e:
         db.rollback()
-        print(f"차단 해제 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="차단 해제 중 오류가 발생했습니다."
@@ -4372,7 +4319,6 @@ async def get_blocked_users(
         )
         
     except Exception as e:
-        print(f"차단 목록 조회 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="차단 목록 조회 중 오류가 발생했습니다."
@@ -4405,7 +4351,6 @@ async def get_notification_settings(
         return settings
         
     except Exception as e:
-        print(f"알림 설정 조회 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="알림 설정 조회 중 오류가 발생했습니다."
@@ -4448,7 +4393,6 @@ async def update_notification_settings(
         
     except Exception as e:
         db.rollback()
-        print(f"알림 설정 업데이트 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="알림 설정 업데이트 중 오류가 발생했습니다."
@@ -4458,151 +4402,8 @@ async def update_notification_settings(
 # 그룹/워크스페이스 시스템 API
 # =============================================================================
 
-@app.post("/groups/", response_model=GroupResponse, status_code=status.HTTP_201_CREATED)
-async def create_group(
-    group_data: GroupCreate,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """그룹을 생성합니다."""
-    try:
-        group = Group(
-            group_name=group_data.group_name,
-            description=group_data.description,
-            created_by=current_user.user_id,
-            is_public=group_data.is_public,
-            requires_approval=group_data.requires_approval,
-            max_members=group_data.max_members
-        )
-        db.add(group)
-        db.commit()
-        db.refresh(group)
-        
-        # 생성자를 owner로 추가
-        member = GroupMember(
-            group_id=group.group_id,
-            user_id=current_user.user_id,
-            role='owner',
-            status='approved'
-        )
-        db.add(member)
-        db.commit()
-        
-        creator = db.query(User).filter(User.user_id == group.created_by).first()
-        return GroupResponse(
-            group_id=group.group_id,
-            group_name=group.group_name,
-            description=group.description,
-            is_public=group.is_public,
-            requires_approval=group.requires_approval,
-            max_members=group.max_members,
-            created_by=group.created_by,
-            creator_name=creator.name if creator else "알 수 없음",
-            is_active=group.is_active,
-            member_count=1,
-            created_at=group.created_at,
-            updated_at=group.updated_at
-        )
-        
-    except Exception as e:
-        db.rollback()
-        print(f"그룹 생성 에러: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="그룹 생성 중 오류가 발생했습니다."
-        )
-
-@app.get("/groups/", response_model=GroupListResponse)
-async def get_groups(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-    page: int = 1,
-    size: int = 20
-):
-    """그룹 목록을 조회합니다."""
-    try:
-        # 사용자가 참여한 그룹 또는 공개 그룹
-        groups = db.query(Group).filter(
-            (Group.is_public == True) | (Group.created_by == current_user.user_id)
-        ).filter(Group.is_active == True).offset((page - 1) * size).limit(size).all()
-        
-        results = []
-        for group in groups:
-            creator = db.query(User).filter(User.user_id == group.created_by).first()
-            member_count = db.query(GroupMember).filter(
-                GroupMember.group_id == group.group_id,
-                GroupMember.is_active == True
-            ).count()
-            
-            results.append(GroupResponse(
-                group_id=group.group_id,
-                group_name=group.group_name,
-                description=group.description,
-                is_public=group.is_public,
-                requires_approval=group.requires_approval,
-                max_members=group.max_members,
-                created_by=group.created_by,
-                creator_name=creator.name if creator else "알 수 없음",
-                is_active=group.is_active,
-                member_count=member_count,
-                created_at=group.created_at,
-                updated_at=group.updated_at
-            ))
-        
-        return GroupListResponse(groups=results, total_count=len(results))
-        
-    except Exception as e:
-        print(f"그룹 목록 조회 에러: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="그룹 목록 조회 중 오류가 발생했습니다."
-        )
-
-@app.get("/groups/{group_id}", response_model=GroupResponse)
-async def get_group(
-    group_id: int,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """그룹 상세 정보를 조회합니다."""
-    try:
-        group = db.query(Group).filter(Group.group_id == group_id).first()
-        
-        if not group:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="그룹을 찾을 수 없습니다."
-            )
-        
-        creator = db.query(User).filter(User.user_id == group.created_by).first()
-        member_count = db.query(GroupMember).filter(
-            GroupMember.group_id == group_id,
-            GroupMember.is_active == True
-        ).count()
-        
-        return GroupResponse(
-            group_id=group.group_id,
-            group_name=group.group_name,
-            description=group.description,
-            is_public=group.is_public,
-            requires_approval=group.requires_approval,
-            max_members=group.max_members,
-            created_by=group.created_by,
-            creator_name=creator.name if creator else "알 수 없음",
-            is_active=group.is_active,
-            member_count=member_count,
-            created_at=group.created_at,
-            updated_at=group.updated_at
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"그룹 조회 에러: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="그룹 조회 중 오류가 발생했습니다."
-        )
+# ⚠️ 이 API는 중복입니다. Line 7424의 get_group_detail을 사용하세요.
+# 삭제됨: 오래된 get_group API (Phase 1 필드 없음)
 
 @app.put("/groups/{group_id}", response_model=GroupResponse)
 async def update_group(
@@ -4647,14 +4448,84 @@ async def update_group(
         if group_data.max_members is not None:
             group.max_members = group_data.max_members
         
+        # Phase 1 필드 업데이트
+        if group_data.category is not None:
+            group.category = group_data.category
+        if group_data.tags is not None:
+            group.tags = json.dumps(group_data.tags, ensure_ascii=False) if group_data.tags else None
+        if group_data.primary_image_url is not None:
+            group.primary_image_url = group_data.primary_image_url
+        if group_data.is_regular is not None:
+            group.is_regular = group_data.is_regular
+        if group_data.regular_weekday is not None:
+            group.regular_weekday = json.dumps(group_data.regular_weekday) if group_data.regular_weekday else None
+        if group_data.regular_time is not None:
+            group.regular_time = group_data.regular_time
+        if group_data.regular_location is not None:
+            group.regular_location = group_data.regular_location
+        if group_data.rules is not None:
+            group.rules = json.dumps(group_data.rules, ensure_ascii=False) if group_data.rules else None
+        if group_data.activity_plan is not None:
+            group.activity_plan = json.dumps(group_data.activity_plan, ensure_ascii=False) if group_data.activity_plan else None
+        
         db.commit()
         db.refresh(group)
+        
         
         creator = db.query(User).filter(User.user_id == group.created_by).first()
         member_count = db.query(GroupMember).filter(
             GroupMember.group_id == group_id,
             GroupMember.is_active == True
         ).count()
+        
+        like_count = db.query(GroupLike).filter(
+            GroupLike.group_id == group_id
+        ).count()
+        
+        is_liked = db.query(GroupLike).filter(
+            GroupLike.group_id == group_id,
+            GroupLike.user_id == current_user.user_id
+        ).first() is not None
+        
+        pending_requests = db.query(GroupMember).filter(
+            GroupMember.group_id == group_id,
+            GroupMember.role == 'pending'
+        ).count()
+        
+        # tags를 JSON에서 리스트로 변환
+        tags_list = []
+        if group.tags:
+            try:
+                tags_list = json.loads(group.tags) if isinstance(group.tags, str) else group.tags
+            except:
+                tags_list = []
+        
+        # regular_weekday를 JSON에서 리스트로 변환
+        weekday_list = []
+        if group.regular_weekday:
+            try:
+                weekday_list = json.loads(group.regular_weekday) if isinstance(group.regular_weekday, str) else group.regular_weekday
+            except:
+                weekday_list = []
+        
+        # rules를 JSON에서 리스트로 변환
+        rules_list = []
+        if group.rules:
+            try:
+                rules_list = json.loads(group.rules) if isinstance(group.rules, str) else group.rules
+            except:
+                rules_list = []
+        
+        # activity_plan을 JSON에서 리스트로 변환
+        activity_plan_list = []
+        if group.activity_plan:
+            try:
+                activity_plan_list = json.loads(group.activity_plan) if isinstance(group.activity_plan, str) else group.activity_plan
+            except:
+                activity_plan_list = []
+        
+        # 한글 요일 표시 생성
+        weekday_display = weekdays_to_korean(weekday_list)
         
         return GroupResponse(
             group_id=group.group_id,
@@ -4663,10 +4534,24 @@ async def update_group(
             is_public=group.is_public,
             requires_approval=group.requires_approval,
             max_members=group.max_members,
+            category=group.category,
+            tags=tags_list,
+            primary_image_url=group.primary_image_url,
+            is_regular=group.is_regular,
+            regular_weekday=weekday_list,
+            regular_weekday_display=weekday_display,
+            regular_time=group.regular_time,
+            regular_location=group.regular_location,
+            rules=rules_list,
+            activity_plan=activity_plan_list,
             created_by=group.created_by,
             creator_name=creator.name if creator else "알 수 없음",
             is_active=group.is_active,
             member_count=member_count,
+            like_count=like_count,
+            is_liked=is_liked,
+            view_count=group.view_count,
+            pending_requests=pending_requests,
             created_at=group.created_at,
             updated_at=group.updated_at
         )
@@ -4675,7 +4560,6 @@ async def update_group(
         raise
     except Exception as e:
         db.rollback()
-        print(f"그룹 수정 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="그룹 수정 중 오류가 발생했습니다."
@@ -4714,7 +4598,6 @@ async def delete_group(
         raise
     except Exception as e:
         db.rollback()
-        print(f"그룹 삭제 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="그룹 삭제 중 오류가 발생했습니다."
@@ -4772,7 +4655,6 @@ async def join_group(
         raise
     except Exception as e:
         db.rollback()
-        print(f"그룹 가입 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="그룹 가입 중 오류가 발생했습니다."
@@ -4816,7 +4698,6 @@ async def leave_group(
         raise
     except Exception as e:
         db.rollback()
-        print(f"그룹 탈퇴 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="그룹 탈퇴 중 오류가 발생했습니다."
@@ -4862,7 +4743,6 @@ async def get_group_members(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"멤버 목록 조회 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="멤버 목록 조회 중 오류가 발생했습니다."
@@ -4957,7 +4837,6 @@ async def get_matching_recommendations(
         )
         
     except Exception as e:
-        print(f"매칭 추천 조회 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -5027,7 +4906,6 @@ async def create_matching_request(
         raise
     except Exception as e:
         db.rollback()
-        print(f"매칭 요청 생성 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="매칭 요청 생성 중 오류가 발생했습니다."
@@ -5066,8 +4944,8 @@ async def accept_matching_request(
         
         # 채팅방 자동 생성 (이미 존재하는지 확인)
         existing_room = db.query(ChatRoom).join(ChatParticipant).filter(
-            ChatRoom.is_group == False,
-            ChatRoom.is_deleted == False
+            ChatRoom.room_type == 'direct',
+            ChatRoom.is_active == True
         ).filter(
             ChatParticipant.user_id.in_([matching_request.requester_id, matching_request.requested_id])
         ).group_by(ChatRoom.room_id).having(
@@ -5082,8 +4960,8 @@ async def accept_matching_request(
             
             # 1:1 채팅방 생성
             chat_room = ChatRoom(
-                name=f"{requester.name}, {requested.name}",
-                is_group=False,
+                room_name=f"{requester.name}, {requested.name}",
+                room_type='direct',
                 created_by=matching_request.requester_id
             )
             db.add(chat_room)
@@ -5111,14 +4989,13 @@ async def accept_matching_request(
         return {
             "message": "매칭 요청이 수락되었습니다.",
             "chat_room_id": chat_room.room_id,
-            "chat_room_name": chat_room.name
+            "chat_room_name": chat_room.room_name
         }
         
     except HTTPException:
         raise
     except Exception as e:
         db.rollback()
-        print(f"매칭 요청 수락 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -5155,7 +5032,6 @@ async def reject_matching_request(
         raise
     except Exception as e:
         db.rollback()
-        print(f"매칭 요청 거절 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="매칭 요청 거절 중 오류가 발생했습니다."
@@ -5198,7 +5074,6 @@ async def get_matching_requests(
         return MatchingRequestListResponse(requests=results, total_count=len(results))
         
     except Exception as e:
-        print(f"매칭 요청 목록 조회 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="매칭 요청 목록 조회 중 오류가 발생했습니다."
@@ -5233,7 +5108,6 @@ async def get_friends(
         return FriendListResponse(friends=results, total_count=len(results))
         
     except Exception as e:
-        print(f"친구 목록 조회 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="친구 목록 조회 중 오류가 발생했습니다."
@@ -5268,7 +5142,6 @@ async def remove_friend(
         raise
     except Exception as e:
         db.rollback()
-        print(f"친구 관계 해제 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="친구 관계 해제 중 오류가 발생했습니다."
@@ -5305,7 +5178,8 @@ async def create_group_post(
             group_id=group_id,
             author_id=current_user.user_id,
             title=post_data.title,
-            content=post_data.content
+            content=post_data.content,
+            category=post_data.category or "일반"
         )
         db.add(post)
         db.commit()
@@ -5324,7 +5198,10 @@ async def create_group_post(
             author_name=author.name if author else "알 수 없음",
             title=post.title,
             content=post.content,
+            category=post.category or "일반",
             is_pinned=post.is_pinned,
+            like_count=0,
+            is_liked=False,
             created_at=post.created_at,
             updated_at=post.updated_at,
             comment_count=comment_count
@@ -5334,7 +5211,6 @@ async def create_group_post(
         raise
     except Exception as e:
         db.rollback()
-        print(f"게시글 생성 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="게시글 생성 중 오류가 발생했습니다."
@@ -5363,6 +5239,15 @@ async def get_group_posts(
                 GroupPostComment.is_deleted == False
             ).count()
             
+            like_count = db.query(GroupPostLike).filter(
+                GroupPostLike.post_id == post.post_id
+            ).count()
+            
+            is_liked = db.query(GroupPostLike).filter(
+                GroupPostLike.post_id == post.post_id,
+                GroupPostLike.user_id == current_user.user_id
+            ).first() is not None
+            
             results.append(GroupPostResponse(
                 post_id=post.post_id,
                 group_id=post.group_id,
@@ -5370,7 +5255,10 @@ async def get_group_posts(
                 author_name=author.name if author else "알 수 없음",
                 title=post.title,
                 content=post.content,
+                category=post.category or "일반",
                 is_pinned=post.is_pinned,
+                like_count=like_count,
+                is_liked=is_liked,
                 created_at=post.created_at,
                 updated_at=post.updated_at,
                 comment_count=comment_count
@@ -5379,7 +5267,6 @@ async def get_group_posts(
         return GroupPostListResponse(posts=results, total_count=len(results))
         
     except Exception as e:
-        print(f"게시글 목록 조회 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="게시글 목록 조회 중 오류가 발생했습니다."
@@ -5412,6 +5299,15 @@ async def get_group_post(
             GroupPostComment.is_deleted == False
         ).count()
         
+        like_count = db.query(GroupPostLike).filter(
+            GroupPostLike.post_id == post.post_id
+        ).count()
+        
+        is_liked = db.query(GroupPostLike).filter(
+            GroupPostLike.post_id == post.post_id,
+            GroupPostLike.user_id == current_user.user_id
+        ).first() is not None
+        
         return GroupPostResponse(
             post_id=post.post_id,
             group_id=post.group_id,
@@ -5419,7 +5315,10 @@ async def get_group_post(
             author_name=author.name if author else "알 수 없음",
             title=post.title,
             content=post.content,
+            category=post.category or "일반",
             is_pinned=post.is_pinned,
+            like_count=like_count,
+            is_liked=is_liked,
             created_at=post.created_at,
             updated_at=post.updated_at,
             comment_count=comment_count
@@ -5428,7 +5327,6 @@ async def get_group_post(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"게시글 조회 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="게시글 조회 중 오류가 발생했습니다."
@@ -5461,6 +5359,8 @@ async def update_group_post(
             post.title = post_data.title
         if post_data.content is not None:
             post.content = post_data.content
+        if post_data.category is not None:
+            post.category = post_data.category
         
         db.commit()
         db.refresh(post)
@@ -5471,6 +5371,15 @@ async def update_group_post(
             GroupPostComment.is_deleted == False
         ).count()
         
+        like_count = db.query(GroupPostLike).filter(
+            GroupPostLike.post_id == post.post_id
+        ).count()
+        
+        is_liked = db.query(GroupPostLike).filter(
+            GroupPostLike.post_id == post.post_id,
+            GroupPostLike.user_id == current_user.user_id
+        ).first() is not None
+        
         return GroupPostResponse(
             post_id=post.post_id,
             group_id=post.group_id,
@@ -5478,7 +5387,10 @@ async def update_group_post(
             author_name=author.name if author else "알 수 없음",
             title=post.title,
             content=post.content,
+            category=post.category or "일반",
             is_pinned=post.is_pinned,
+            like_count=like_count,
+            is_liked=is_liked,
             created_at=post.created_at,
             updated_at=post.updated_at,
             comment_count=comment_count
@@ -5488,7 +5400,6 @@ async def update_group_post(
         raise
     except Exception as e:
         db.rollback()
-        print(f"게시글 수정 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="게시글 수정 중 오류가 발생했습니다."
@@ -5539,7 +5450,6 @@ async def delete_group_post(
         raise
     except Exception as e:
         db.rollback()
-        print(f"게시글 삭제 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="게시글 삭제 중 오류가 발생했습니다."
@@ -5588,6 +5498,8 @@ async def create_group_post_comment(
             author_name=author.name if author else "알 수 없음",
             content=comment.content,
             parent_comment_id=comment.parent_comment_id,
+            like_count=0,
+            is_liked=False,
             created_at=comment.created_at,
             updated_at=comment.updated_at
         )
@@ -5596,7 +5508,6 @@ async def create_group_post_comment(
         raise
     except Exception as e:
         db.rollback()
-        print(f"댓글 생성 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="댓글 생성 중 오류가 발생했습니다."
@@ -5619,6 +5530,17 @@ async def get_group_post_comments(
         results = []
         for comment in comments:
             author = db.query(User).filter(User.user_id == comment.author_id).first()
+            
+            # 좋아요 수 계산
+            like_count = db.query(GroupPostCommentLike).filter(
+                GroupPostCommentLike.comment_id == comment.comment_id
+            ).count()
+            
+            is_liked = db.query(GroupPostCommentLike).filter(
+                GroupPostCommentLike.comment_id == comment.comment_id,
+                GroupPostCommentLike.user_id == current_user.user_id
+            ).first() is not None
+            
             results.append(GroupPostCommentResponse(
                 comment_id=comment.comment_id,
                 post_id=comment.post_id,
@@ -5626,6 +5548,8 @@ async def get_group_post_comments(
                 author_name=author.name if author else "알 수 없음",
                 content=comment.content,
                 parent_comment_id=comment.parent_comment_id,
+                like_count=like_count,
+                is_liked=is_liked,
                 created_at=comment.created_at,
                 updated_at=comment.updated_at
             ))
@@ -5633,7 +5557,6 @@ async def get_group_post_comments(
         return GroupPostCommentListResponse(comments=results, total_count=len(results))
         
     except Exception as e:
-        print(f"댓글 목록 조회 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="댓글 목록 조회 중 오류가 발생했습니다."
@@ -5671,6 +5594,16 @@ async def update_group_post_comment(
         
         author = db.query(User).filter(User.user_id == comment.author_id).first()
         
+        # 좋아요 수 계산
+        like_count = db.query(GroupPostCommentLike).filter(
+            GroupPostCommentLike.comment_id == comment.comment_id
+        ).count()
+        
+        is_liked = db.query(GroupPostCommentLike).filter(
+            GroupPostCommentLike.comment_id == comment.comment_id,
+            GroupPostCommentLike.user_id == current_user.user_id
+        ).first() is not None
+        
         return GroupPostCommentResponse(
             comment_id=comment.comment_id,
             post_id=comment.post_id,
@@ -5678,6 +5611,8 @@ async def update_group_post_comment(
             author_name=author.name if author else "알 수 없음",
             content=comment.content,
             parent_comment_id=comment.parent_comment_id,
+            like_count=like_count,
+            is_liked=is_liked,
             created_at=comment.created_at,
             updated_at=comment.updated_at
         )
@@ -5686,7 +5621,6 @@ async def update_group_post_comment(
         raise
     except Exception as e:
         db.rollback()
-        print(f"댓글 수정 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="댓글 수정 중 오류가 발생했습니다."
@@ -5738,7 +5672,6 @@ async def delete_group_post_comment(
         raise
     except Exception as e:
         db.rollback()
-        print(f"댓글 삭제 에러: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="댓글 삭제 중 오류가 발생했습니다."
@@ -5758,6 +5691,7 @@ async def upload_group_gallery_image(
 ):
     """그룹 갤러리에 이미지를 업로드합니다."""
     try:
+        
         # 그룹 존재 확인
         group = db.query(Group).filter(
             Group.group_id == group_id,
@@ -5770,6 +5704,7 @@ async def upload_group_gallery_image(
                 detail="그룹을 찾을 수 없습니다."
             )
         
+        
         # 그룹 멤버 확인
         member = db.query(GroupMember).filter(
             GroupMember.group_id == group_id,
@@ -5778,17 +5713,40 @@ async def upload_group_gallery_image(
         ).first()
         
         if not member:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="그룹 멤버만 이미지를 업로드할 수 있습니다."
-            )
+            # 그룹 생성자인지 확인
+            if group.created_by == current_user.user_id:
+                # 생성자를 owner로 추가
+                new_member = GroupMember(
+                    group_id=group_id,
+                    user_id=current_user.user_id,
+                    role='owner',
+                    is_active=True
+                )
+                db.add(new_member)
+                db.commit()
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="그룹 멤버만 이미지를 업로드할 수 있습니다."
+                )
         
-        # 파일 검증
-        if not image.content_type.startswith('image/'):
+        # 파일 검증 (Content-Type 또는 파일 확장자로 확인)
+        import os
+        
+        # 허용된 이미지 확장자
+        allowed_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp']
+        file_extension = os.path.splitext(image.filename)[1].lower() if image.filename else ''
+        
+        # Content-Type이 image/*이거나, 파일 확장자가 이미지 확장자인 경우 허용
+        is_valid_content_type = image.content_type and image.content_type.startswith('image/')
+        is_valid_extension = file_extension in allowed_extensions
+        
+        if not (is_valid_content_type or is_valid_extension):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="이미지 파일만 업로드할 수 있습니다."
+                detail=f"이미지 파일만 업로드할 수 있습니다. (Content-Type: {image.content_type}, 확장자: {file_extension})"
             )
+        
         
         # 파일 크기 검증 (10MB)
         content = await image.read()
@@ -5846,7 +5804,6 @@ async def upload_group_gallery_image(
         raise
     except Exception as e:
         db.rollback()
-        print(f"갤러리 이미지 업로드 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -5925,7 +5882,6 @@ async def get_group_gallery_images(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"갤러리 조회 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -5978,8 +5934,8 @@ async def delete_group_gallery_image(
             import os
             if os.path.exists(image.image_url.lstrip('/')):
                 os.remove(image.image_url.lstrip('/'))
-        except Exception as e:
-            print(f"파일 삭제 에러: {e}")
+        except Exception:
+            pass
         
         return {"message": "이미지가 삭제되었습니다."}
         
@@ -5987,7 +5943,6 @@ async def delete_group_gallery_image(
         raise
     except Exception as e:
         db.rollback()
-        print(f"이미지 삭제 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -6091,7 +6046,6 @@ async def update_group_member_role(
         raise
     except Exception as e:
         db.rollback()
-        print(f"멤버 역할 변경 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -6172,7 +6126,6 @@ async def create_group_meeting(
         raise
     except Exception as e:
         db.rollback()
-        print(f"정기모임 생성 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -6259,7 +6212,6 @@ async def get_group_meetings(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"정기모임 목록 조회 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -6333,7 +6285,6 @@ async def get_group_meeting(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"정기모임 상세 조회 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -6421,7 +6372,6 @@ async def update_group_meeting(
         raise
     except Exception as e:
         db.rollback()
-        print(f"정기모임 수정 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -6475,7 +6425,6 @@ async def delete_group_meeting(
         raise
     except Exception as e:
         db.rollback()
-        print(f"정기모임 삭제 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -6487,10 +6436,11 @@ async def delete_group_meeting(
 async def attend_group_meeting(
     group_id: int,
     meeting_id: int,
+    attend_data: GroupMeetingAttendRequest,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """정기모임에 참석 신청을 합니다."""
+    """정기모임 참석 상태를 업데이트합니다 (attending/not_attending/maybe)."""
     try:
         # 정기모임 조회
         meeting = db.query(GroupMeeting).filter(
@@ -6518,11 +6468,19 @@ async def attend_group_meeting(
                 detail="그룹 멤버만 참석 신청할 수 있습니다."
             )
         
-        # 최대 참석자 수 확인
-        if meeting.max_attendees:
+        # 상태 검증
+        if attend_data.status not in ['attending', 'not_attending', 'maybe']:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="올바른 참석 상태가 아닙니다. (attending/not_attending/maybe)"
+            )
+        
+        # 최대 참석자 수 확인 (attending으로 변경 시)
+        if attend_data.status == 'attending' and meeting.max_attendees:
             current_attendee_count = db.query(GroupMeetingAttendee).filter(
                 GroupMeetingAttendee.meeting_id == meeting_id,
-                GroupMeetingAttendee.status == 'attending'
+                GroupMeetingAttendee.status == 'attending',
+                GroupMeetingAttendee.user_id != current_user.user_id
             ).count()
             
             if current_attendee_count >= meeting.max_attendees:
@@ -6531,7 +6489,7 @@ async def attend_group_meeting(
                     detail="참석 인원이 마감되었습니다."
                 )
         
-        # 이미 참석 신청했는지 확인
+        # 이미 참석 기록이 있는지 확인
         existing = db.query(GroupMeetingAttendee).filter(
             GroupMeetingAttendee.meeting_id == meeting_id,
             GroupMeetingAttendee.user_id == current_user.user_id
@@ -6539,25 +6497,40 @@ async def attend_group_meeting(
         
         if existing:
             # 상태 업데이트
-            existing.status = 'attending'
+            existing.status = attend_data.status
             db.commit()
-            return {"message": "참석 신청이 완료되었습니다."}
         else:
             # 새로 생성
             attendee = GroupMeetingAttendee(
                 meeting_id=meeting_id,
                 user_id=current_user.user_id,
-                status='attending'
+                status=attend_data.status
             )
             db.add(attendee)
             db.commit()
-            return {"message": "참석 신청이 완료되었습니다."}
+        
+        # 참석자 수 계산 (attending만)
+        attendee_count = db.query(GroupMeetingAttendee).filter(
+            GroupMeetingAttendee.meeting_id == meeting_id,
+            GroupMeetingAttendee.status == 'attending'
+        ).count()
+        
+        status_message = {
+            'attending': '참석 신청이 완료되었습니다.',
+            'not_attending': '불참 처리되었습니다.',
+            'maybe': '미정으로 처리되었습니다.'
+        }
+        
+        return {
+            "message": status_message.get(attend_data.status, "상태가 업데이트되었습니다."),
+            "status": attend_data.status,
+            "attendee_count": attendee_count
+        }
         
     except HTTPException:
         raise
     except Exception as e:
         db.rollback()
-        print(f"참석 신청 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -6596,7 +6569,6 @@ async def cancel_attend_group_meeting(
         raise
     except Exception as e:
         db.rollback()
-        print(f"참석 취소 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -6670,10 +6642,4809 @@ async def get_meeting_attendees(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"참석자 목록 조회 에러: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="참석자 목록 조회 중 오류가 발생했습니다."
+        )
+
+# =============================================================================
+# Phase 1: 그룹 좋아요/조회수/카테고리 시스템
+# =============================================================================
+
+@app.post("/groups/{group_id}/like/", response_model=GroupLikeResponse)
+async def toggle_group_like(
+    group_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """그룹 좋아요 추가/취소 (토글)"""
+    try:
+        # 그룹 존재 확인
+        group = db.query(Group).filter(Group.group_id == group_id).first()
+        if not group:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="그룹을 찾을 수 없습니다."
+            )
+        
+        # 기존 좋아요 확인
+        existing_like = db.query(GroupLike).filter(
+            GroupLike.group_id == group_id,
+            GroupLike.user_id == current_user.user_id
+        ).first()
+        
+        if existing_like:
+            # 좋아요 취소
+            db.delete(existing_like)
+            db.commit()
+            is_liked = False
+        else:
+            # 좋아요 추가
+            new_like = GroupLike(
+                group_id=group_id,
+                user_id=current_user.user_id
+            )
+            db.add(new_like)
+            db.commit()
+            is_liked = True
+        
+        # 좋아요 수 조회
+        like_count = db.query(GroupLike).filter(GroupLike.group_id == group_id).count()
+        
+        return GroupLikeResponse(
+            group_id=group_id,
+            like_count=like_count,
+            is_liked=is_liked
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="좋아요 처리 중 오류가 발생했습니다."
+        )
+
+@app.get("/groups/{group_id}/likes/", response_model=GroupLikeResponse)
+async def get_group_likes(
+    group_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """그룹 좋아요 수 및 상태 조회"""
+    try:
+        # 그룹 존재 확인
+        group = db.query(Group).filter(Group.group_id == group_id).first()
+        if not group:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="그룹을 찾을 수 없습니다."
+            )
+        
+        # 좋아요 수 조회
+        like_count = db.query(GroupLike).filter(GroupLike.group_id == group_id).count()
+        
+        # 현재 사용자 좋아요 여부 확인
+        is_liked = db.query(GroupLike).filter(
+            GroupLike.group_id == group_id,
+            GroupLike.user_id == current_user.user_id
+        ).first() is not None
+        
+        return GroupLikeResponse(
+            group_id=group_id,
+            like_count=like_count,
+            is_liked=is_liked
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="좋아요 정보 조회 중 오류가 발생했습니다."
+        )
+
+def weekdays_to_korean(weekdays: Optional[List[int]]) -> Optional[str]:
+    """요일 숫자 리스트를 한글로 변환 (예: [2, 7] -> "화,일")"""
+    if not weekdays:
+        return None
+    
+    weekday_map = {
+        1: "월", 2: "화", 3: "수", 4: "목", 5: "금", 6: "토", 7: "일"
+    }
+    
+    korean_days = [weekday_map.get(day, "") for day in weekdays if day in weekday_map]
+    return ",".join(korean_days) if korean_days else None
+
+@app.get("/groups/categories/", response_model=GroupCategoryListResponse)
+async def get_group_categories():
+    """그룹 카테고리 목록 조회"""
+    return GroupCategoryListResponse(
+        categories=[category.value for category in GroupCategoryEnum]
+    )
+
+@app.get("/groups/{group_id}/stats/", response_model=GroupStatsResponse)
+async def get_group_stats(
+    group_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """모임 통계 조회"""
+    try:
+        # 그룹 존재 확인
+        group = db.query(Group).filter(
+            Group.group_id == group_id,
+            Group.is_active == True
+        ).first()
+        
+        if not group:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="그룹을 찾을 수 없습니다."
+            )
+        
+        # 멤버 권한 확인 (멤버만 통계 조회 가능)
+        member = db.query(GroupMember).filter(
+            GroupMember.group_id == group_id,
+            GroupMember.user_id == current_user.user_id,
+            GroupMember.is_active == True
+        ).first()
+        
+        if not member and group.created_by != current_user.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="그룹 멤버만 통계를 조회할 수 있습니다."
+            )
+        
+        # 총 멤버 수
+        total_members = db.query(GroupMember).filter(
+            GroupMember.group_id == group_id,
+            GroupMember.is_active == True,
+            GroupMember.role != 'pending'
+        ).count()
+        
+        # 주간 활성 멤버 수 (최근 7일 내 게시글/댓글 작성자)
+        from datetime import datetime, timedelta
+        week_ago = datetime.now() - timedelta(days=7)
+        
+        active_post_users = db.query(GroupPost.author_id).filter(
+            GroupPost.group_id == group_id,
+            GroupPost.created_at >= week_ago
+        ).distinct().count()
+        
+        active_comment_users = db.query(GroupPostComment.author_id).filter(
+            GroupPostComment.post_id.in_(
+                db.query(GroupPost.post_id).filter(GroupPost.group_id == group_id)
+            ),
+            GroupPostComment.created_at >= week_ago
+        ).distinct().count()
+        
+        active_members_week = max(active_post_users, active_comment_users)
+        
+        # 주간 신규 멤버 수
+        new_members_week = db.query(GroupMember).filter(
+            GroupMember.group_id == group_id,
+            GroupMember.joined_at >= week_ago,
+            GroupMember.is_active == True
+        ).count()
+        
+        # 총 게시글 수
+        total_posts = db.query(GroupPost).filter(
+            GroupPost.group_id == group_id
+        ).count()
+        
+        # 총 댓글 수
+        total_comments = db.query(GroupPostComment).filter(
+            GroupPostComment.post_id.in_(
+                db.query(GroupPost.post_id).filter(GroupPost.group_id == group_id)
+            )
+        ).count()
+        
+        # 총 모임 수
+        total_meetings = db.query(GroupMeeting).filter(
+            GroupMeeting.group_id == group_id
+        ).count()
+        
+        # 총 좋아요 수
+        total_likes = db.query(GroupLike).filter(
+            GroupLike.group_id == group_id
+        ).count()
+        
+        return GroupStatsResponse(
+            group_id=group_id,
+            total_members=total_members,
+            active_members_week=active_members_week,
+            new_members_week=new_members_week,
+            total_posts=total_posts,
+            total_comments=total_comments,
+            total_meetings=total_meetings,
+            total_likes=total_likes,
+            view_count=group.view_count
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"통계 조회 중 오류가 발생했습니다: {str(e)}"
+        )
+
+@app.get("/groups/{group_id}/stats/member-growth/", response_model=MemberGrowthResponse)
+async def get_member_growth_stats(
+    group_id: int,
+    months: int = 6,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """멤버 성장 현황 조회 (최근 N개월)"""
+    try:
+        # 그룹 존재 확인
+        group = db.query(Group).filter(
+            Group.group_id == group_id,
+            Group.is_active == True
+        ).first()
+        
+        if not group:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="그룹을 찾을 수 없습니다."
+            )
+        
+        # 멤버 권한 확인
+        member = db.query(GroupMember).filter(
+            GroupMember.group_id == group_id,
+            GroupMember.user_id == current_user.user_id,
+            GroupMember.is_active == True
+        ).first()
+        
+        if not member and group.created_by != current_user.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="그룹 멤버만 통계를 조회할 수 있습니다."
+            )
+        
+        from datetime import datetime, timedelta
+        from calendar import monthrange
+        
+        # 월별 멤버 수 계산
+        growth_data = []
+        current_date = datetime.now()
+        
+        for i in range(months):
+            # N개월 전 계산
+            year = current_date.year
+            month = current_date.month - i
+            
+            # 음수 월 처리
+            while month <= 0:
+                month += 12
+                year -= 1
+            
+            month_str = f"{year:04d}-{month:02d}"
+            
+            # 해당 월의 마지막 날 계산
+            last_day = monthrange(year, month)[1]
+            month_end = datetime(year, month, last_day, 23, 59, 59)
+            
+            # 해당 월까지 가입한 멤버 수
+            member_count = db.query(GroupMember).filter(
+                GroupMember.group_id == group_id,
+                GroupMember.joined_at <= month_end,
+                GroupMember.is_active == True
+            ).count()
+            
+            growth_data.insert(0, MemberGrowthData(
+                month=month_str,
+                member_count=member_count
+            ))
+        
+        return MemberGrowthResponse(
+            group_id=group_id,
+            data=growth_data
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"통계 조회 중 오류가 발생했습니다: {str(e)}"
+        )
+
+@app.get("/groups/{group_id}/posts/stats/by-category/", response_model=PostCategoryStatsResponse)
+async def get_post_category_stats(
+    group_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """카테고리별 게시글 통계 조회"""
+    try:
+        # 그룹 존재 확인
+        group = db.query(Group).filter(
+            Group.group_id == group_id,
+            Group.is_active == True
+        ).first()
+        
+        if not group:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="그룹을 찾을 수 없습니다."
+            )
+        
+        # 멤버 권한 확인
+        member = db.query(GroupMember).filter(
+            GroupMember.group_id == group_id,
+            GroupMember.user_id == current_user.user_id,
+            GroupMember.is_active == True
+        ).first()
+        
+        if not member and group.created_by != current_user.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="그룹 멤버만 통계를 조회할 수 있습니다."
+            )
+        
+        from sqlalchemy import func
+        
+        # 카테고리별 게시글 수 집계
+        category_stats = db.query(
+            GroupPost.category,
+            func.count(GroupPost.post_id).label('count')
+        ).filter(
+            GroupPost.group_id == group_id,
+            GroupPost.is_deleted == False
+        ).group_by(
+            GroupPost.category
+        ).all()
+        
+        stats = [
+            PostCategoryStats(
+                category=category or "일반",
+                count=count
+            )
+            for category, count in category_stats
+        ]
+        
+        # 카테고리가 없으면 기본값 반환
+        if not stats:
+            stats = [PostCategoryStats(category="일반", count=0)]
+        
+        return PostCategoryStatsResponse(
+            group_id=group_id,
+            stats=stats
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"통계 조회 중 오류가 발생했습니다: {str(e)}"
+        )
+
+@app.get("/users/{user_id}/groups/", response_model=GroupListResponse)
+async def get_user_groups(
+    user_id: int,
+    page: int = 1,
+    size: int = 20,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """사용자가 가입한 모임 목록 조회"""
+    try:
+        # 권한 확인 (본인만 조회 가능)
+        if current_user.user_id != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="본인의 모임 목록만 조회할 수 있습니다."
+            )
+        
+        # 사용자가 멤버로 있는 그룹 조회
+        query = db.query(Group).join(GroupMember).filter(
+            GroupMember.user_id == user_id,
+            GroupMember.is_active == True,
+            GroupMember.role != 'pending',  # 대기 중인 신청은 제외
+            Group.is_active == True
+        )
+        
+        # 전체 개수
+        total_count = query.count()
+        
+        # 페이지네이션
+        offset = (page - 1) * size
+        groups = query.order_by(Group.created_at.desc()).offset(offset).limit(size).all()
+        
+        # GroupResponse로 변환
+        group_responses = []
+        for group in groups:
+            member_count = db.query(GroupMember).filter(
+                GroupMember.group_id == group.group_id,
+                GroupMember.is_active == True
+            ).count()
+            
+            like_count = db.query(GroupLike).filter(
+                GroupLike.group_id == group.group_id
+            ).count()
+            
+            is_liked = db.query(GroupLike).filter(
+                GroupLike.group_id == group.group_id,
+                GroupLike.user_id == current_user.user_id
+            ).first() is not None
+            
+            pending_requests = db.query(GroupMember).filter(
+                GroupMember.group_id == group.group_id,
+                GroupMember.role == 'pending'
+            ).count()
+            
+            creator = db.query(User).filter(User.user_id == group.created_by).first()
+            
+            # tags를 JSON에서 리스트로 변환
+            tags_list = []
+            if group.tags:
+                try:
+                    tags_list = json.loads(group.tags) if isinstance(group.tags, str) else group.tags
+                except:
+                    tags_list = []
+            
+            # regular_weekday를 JSON에서 리스트로 변환
+            weekday_list = []
+            if group.regular_weekday:
+                try:
+                    weekday_list = json.loads(group.regular_weekday) if isinstance(group.regular_weekday, str) else group.regular_weekday
+                except:
+                    weekday_list = []
+            
+            # 한글 요일 표시 생성
+            weekday_display = weekdays_to_korean(weekday_list)
+            
+            # rules를 JSON에서 리스트로 변환
+            rules_list = []
+            if group.rules:
+                try:
+                    rules_list = json.loads(group.rules) if isinstance(group.rules, str) else group.rules
+                except:
+                    rules_list = []
+            
+            # activity_plan을 JSON에서 리스트로 변환
+            activity_plan_list = []
+            if group.activity_plan:
+                try:
+                    activity_plan_list = json.loads(group.activity_plan) if isinstance(group.activity_plan, str) else group.activity_plan
+                except:
+                    activity_plan_list = []
+            
+            group_responses.append(GroupResponse(
+                group_id=group.group_id,
+                group_name=group.group_name,
+                description=group.description,
+                is_public=group.is_public,
+                requires_approval=group.requires_approval,
+                max_members=group.max_members,
+                category=group.category,
+                tags=tags_list,
+                primary_image_url=group.primary_image_url,
+                is_regular=group.is_regular,
+                regular_weekday=weekday_list,
+                regular_weekday_display=weekday_display,
+                regular_time=group.regular_time,
+                regular_location=group.regular_location,
+                rules=rules_list,
+                activity_plan=activity_plan_list,
+                created_by=group.created_by,
+                creator_name=creator.name if creator else "Unknown",
+                is_active=group.is_active,
+                member_count=member_count,
+                like_count=like_count,
+                is_liked=is_liked,
+                view_count=group.view_count,
+                pending_requests=pending_requests,
+                created_at=group.created_at,
+                updated_at=group.updated_at
+            ))
+        
+        
+        return GroupListResponse(
+            groups=group_responses,
+            total_count=total_count
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"모임 목록 조회 중 오류가 발생했습니다: {str(e)}"
+        )
+
+@app.post("/groups/", response_model=GroupResponse, status_code=status.HTTP_201_CREATED)
+async def create_group(
+    group_data: GroupCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """그룹 생성 (이미지 포함)"""
+    try:
+        # tags를 JSON 문자열로 변환
+        tags_json = None
+        if group_data.tags:
+            tags_json = json.dumps(group_data.tags, ensure_ascii=False)
+        
+        # regular_weekday를 JSON 문자열로 변환 (List[int] -> JSON)
+        weekday_json = None
+        if group_data.regular_weekday:
+            weekday_json = json.dumps(group_data.regular_weekday)
+        
+        # rules를 JSON 문자열로 변환
+        rules_json = None
+        if group_data.rules:
+            rules_json = json.dumps(group_data.rules, ensure_ascii=False)
+        
+        # activity_plan을 JSON 문자열로 변환
+        activity_plan_json = None
+        if group_data.activity_plan:
+            activity_plan_json = json.dumps(group_data.activity_plan, ensure_ascii=False)
+        
+        # 새 그룹 생성
+        new_group = Group(
+            group_name=group_data.group_name,
+            description=group_data.description,
+            created_by=current_user.user_id,
+            is_public=group_data.is_public,
+            requires_approval=group_data.requires_approval,
+            max_members=group_data.max_members,
+            category=group_data.category,
+            tags=tags_json,
+            primary_image_url=group_data.primary_image_url,
+            is_regular=group_data.is_regular,
+            regular_weekday=weekday_json,
+            regular_time=group_data.regular_time,
+            regular_location=group_data.regular_location,
+            rules=rules_json,
+            activity_plan=activity_plan_json,
+            view_count=0
+        )
+        
+        db.add(new_group)
+        db.commit()
+        db.refresh(new_group)
+        
+        # 생성자를 owner로 자동 추가
+        creator_member = GroupMember(
+            group_id=new_group.group_id,
+            user_id=current_user.user_id,
+            role='owner',
+            is_active=True
+        )
+        db.add(creator_member)
+        db.commit()
+        
+        # 생성자 정보
+        creator = db.query(User).filter(User.user_id == current_user.user_id).first()
+        
+        # tags를 다시 리스트로 변환
+        tags_list = []
+        if new_group.tags:
+            try:
+                tags_list = json.loads(new_group.tags)
+            except:
+                tags_list = []
+        
+        # regular_weekday를 JSON에서 리스트로 변환
+        weekday_list = []
+        if new_group.regular_weekday:
+            try:
+                weekday_list = json.loads(new_group.regular_weekday)
+            except:
+                weekday_list = []
+        
+        # rules를 JSON에서 리스트로 변환
+        rules_list = []
+        if new_group.rules:
+            try:
+                rules_list = json.loads(new_group.rules)
+            except:
+                rules_list = []
+        
+        # activity_plan을 JSON에서 리스트로 변환
+        activity_plan_list = []
+        if new_group.activity_plan:
+            try:
+                activity_plan_list = json.loads(new_group.activity_plan)
+            except:
+                activity_plan_list = []
+        
+        # 한글 요일 표시 생성
+        weekday_display = weekdays_to_korean(weekday_list)
+        
+        return GroupResponse(
+            group_id=new_group.group_id,
+            group_name=new_group.group_name,
+            description=new_group.description,
+            is_public=new_group.is_public,
+            requires_approval=new_group.requires_approval,
+            max_members=new_group.max_members,
+            category=new_group.category,
+            tags=tags_list,
+            primary_image_url=new_group.primary_image_url,
+            is_regular=new_group.is_regular,
+            regular_weekday=weekday_list,
+            regular_weekday_display=weekday_display,
+            regular_time=new_group.regular_time,
+            regular_location=new_group.regular_location,
+            rules=rules_list,
+            activity_plan=activity_plan_list,
+            created_by=new_group.created_by,
+            creator_name=creator.name if creator else "Unknown",
+            is_active=new_group.is_active,
+            member_count=1,
+            like_count=0,
+            is_liked=False,
+            view_count=0,
+            pending_requests=0,
+            created_at=new_group.created_at,
+            updated_at=new_group.updated_at
+        )
+        
+    except Exception as e:
+        db.rollback()
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"그룹 생성 중 오류가 발생했습니다: {str(e)}"
+        )
+
+@app.get("/groups/", response_model=GroupListResponse)
+async def get_groups(
+    page: int = 1,
+    size: int = 20,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """그룹 목록 조회 (공개 그룹 + 내가 만든 그룹)"""
+    try:
+        # 공개 그룹 또는 내가 만든 그룹
+        query = db.query(Group).filter(
+            ((Group.is_public == True) | (Group.created_by == current_user.user_id)),
+            Group.is_active == True
+        )
+        
+        # 전체 개수
+        total_count = query.count()
+        
+        # 페이지네이션
+        offset = (page - 1) * size
+        groups = query.order_by(Group.created_at.desc()).offset(offset).limit(size).all()
+        
+        # GroupResponse로 변환
+        group_responses = []
+        for group in groups:
+            member_count = db.query(GroupMember).filter(
+                GroupMember.group_id == group.group_id,
+                GroupMember.is_active == True
+            ).count()
+            
+            like_count = db.query(GroupLike).filter(
+                GroupLike.group_id == group.group_id
+            ).count()
+            
+            is_liked = db.query(GroupLike).filter(
+                GroupLike.group_id == group.group_id,
+                GroupLike.user_id == current_user.user_id
+            ).first() is not None
+            
+            pending_requests = db.query(GroupMember).filter(
+                GroupMember.group_id == group.group_id,
+                GroupMember.role == 'pending'
+            ).count()
+            
+            creator = db.query(User).filter(User.user_id == group.created_by).first()
+            
+            # tags를 JSON에서 리스트로 변환
+            tags_list = []
+            if group.tags:
+                try:
+                    tags_list = json.loads(group.tags) if isinstance(group.tags, str) else group.tags
+                except:
+                    tags_list = []
+            
+            # regular_weekday를 JSON에서 리스트로 변환
+            weekday_list = []
+            if group.regular_weekday:
+                try:
+                    weekday_list = json.loads(group.regular_weekday) if isinstance(group.regular_weekday, str) else group.regular_weekday
+                except:
+                    weekday_list = []
+            
+            # 한글 요일 표시 생성
+            weekday_display = weekdays_to_korean(weekday_list)
+            
+            # rules를 JSON에서 리스트로 변환
+            rules_list = []
+            if group.rules:
+                try:
+                    rules_list = json.loads(group.rules) if isinstance(group.rules, str) else group.rules
+                except:
+                    rules_list = []
+            
+            # activity_plan을 JSON에서 리스트로 변환
+            activity_plan_list = []
+            if group.activity_plan:
+                try:
+                    activity_plan_list = json.loads(group.activity_plan) if isinstance(group.activity_plan, str) else group.activity_plan
+                except:
+                    activity_plan_list = []
+            
+            group_responses.append(GroupResponse(
+                group_id=group.group_id,
+                group_name=group.group_name,
+                description=group.description,
+                is_public=group.is_public,
+                requires_approval=group.requires_approval,
+                max_members=group.max_members,
+                category=group.category,
+                tags=tags_list,
+                primary_image_url=group.primary_image_url,
+                is_regular=group.is_regular,
+                regular_weekday=weekday_list,
+                regular_weekday_display=weekday_display,
+                regular_time=group.regular_time,
+                regular_location=group.regular_location,
+                rules=rules_list,
+                activity_plan=activity_plan_list,
+                created_by=group.created_by,
+                creator_name=creator.name if creator else "Unknown",
+                is_active=group.is_active,
+                member_count=member_count,
+                like_count=like_count,
+                is_liked=is_liked,
+                view_count=group.view_count,
+                pending_requests=pending_requests,
+                created_at=group.created_at,
+                updated_at=group.updated_at
+            ))
+        
+        return GroupListResponse(
+            groups=group_responses,
+            total_count=total_count
+        )
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"그룹 목록 조회 중 오류가 발생했습니다: {str(e)}"
+        )
+
+@app.get("/groups/{group_id}", response_model=GroupResponse)
+async def get_group_detail(
+    group_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """그룹 상세 조회 (조회수 자동 증가)"""
+    try:
+        # 그룹 조회
+        group = db.query(Group).filter(
+            Group.group_id == group_id,
+            Group.is_active == True
+        ).first()
+        
+        if not group:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="그룹을 찾을 수 없습니다."
+            )
+        
+        # 조회수 증가
+        group.view_count += 1
+        db.commit()
+        
+        # 멤버 수 계산
+        member_count = db.query(GroupMember).filter(
+            GroupMember.group_id == group_id,
+            GroupMember.is_active == True
+        ).count()
+        
+        # 좋아요 수 계산
+        like_count = db.query(GroupLike).filter(
+            GroupLike.group_id == group_id
+        ).count()
+        
+        # 현재 사용자 좋아요 여부
+        is_liked = db.query(GroupLike).filter(
+            GroupLike.group_id == group_id,
+            GroupLike.user_id == current_user.user_id
+        ).first() is not None
+        
+        # 가입 신청 대기 수
+        pending_requests = db.query(GroupMember).filter(
+            GroupMember.group_id == group_id,
+            GroupMember.role == 'pending'
+        ).count()
+        
+        # 생성자 정보
+        creator = db.query(User).filter(User.user_id == group.created_by).first()
+        
+        # tags를 JSON에서 리스트로 변환
+        tags_list = []
+        if group.tags:
+            try:
+                tags_list = json.loads(group.tags) if isinstance(group.tags, str) else group.tags
+            except:
+                tags_list = []
+        
+        # rules를 JSON에서 리스트로 변환
+        rules_list = []
+        if group.rules:
+            try:
+                rules_list = json.loads(group.rules) if isinstance(group.rules, str) else group.rules
+            except:
+                rules_list = []
+        
+        # activity_plan을 JSON에서 리스트로 변환
+        activity_plan_list = []
+        if group.activity_plan:
+            try:
+                activity_plan_list = json.loads(group.activity_plan) if isinstance(group.activity_plan, str) else group.activity_plan
+            except:
+                activity_plan_list = []
+        
+        # regular_weekday를 JSON에서 리스트로 변환
+        regular_weekday_list = None
+        regular_weekday_display = None
+        if group.regular_weekday:
+            try:
+                if isinstance(group.regular_weekday, str):
+                    regular_weekday_list = json.loads(group.regular_weekday)
+                else:
+                    regular_weekday_list = group.regular_weekday
+                # 한글 요일 생성
+                regular_weekday_display = weekdays_to_korean(regular_weekday_list)
+            except:
+                regular_weekday_list = None
+        
+        return GroupResponse(
+            group_id=group.group_id,
+            group_name=group.group_name,
+            description=group.description,
+            is_public=group.is_public,
+            requires_approval=group.requires_approval,
+            max_members=group.max_members,
+            category=group.category,
+            tags=tags_list,
+            primary_image_url=group.primary_image_url,
+            is_regular=group.is_regular,
+            regular_weekday=regular_weekday_list,
+            regular_weekday_display=regular_weekday_display,
+            regular_time=str(group.regular_time) if group.regular_time else None,
+            regular_location=group.regular_location,
+            rules=rules_list,
+            activity_plan=activity_plan_list,
+            created_by=group.created_by,
+            creator_name=creator.name if creator else "Unknown",
+            is_active=group.is_active,
+            member_count=member_count,
+            like_count=like_count,
+            is_liked=is_liked,
+            view_count=group.view_count,
+            pending_requests=pending_requests,
+            created_at=group.created_at,
+            updated_at=group.updated_at
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="그룹 조회 중 오류가 발생했습니다."
+        )
+
+@app.get("/groups/search/", response_model=GroupListResponse)
+async def search_groups(
+    q: Optional[str] = None,
+    category: Optional[str] = None,
+    tag: Optional[str] = None,
+    page: int = 1,
+    size: int = 20,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """그룹 검색 (키워드, 카테고리, 태그)"""
+    try:
+        query = db.query(Group).filter(Group.is_active == True)
+        
+        # 키워드 검색
+        if q:
+            query = query.filter(
+                (Group.group_name.like(f"%{q}%")) |
+                (Group.description.like(f"%{q}%"))
+            )
+        
+        # 카테고리 필터
+        if category:
+            query = query.filter(Group.category == category)
+        
+        # 태그 필터
+        if tag:
+            query = query.filter(Group.tags.like(f"%{tag}%"))
+        
+        # 전체 개수
+        total_count = query.count()
+        
+        # 페이지네이션
+        offset = (page - 1) * size
+        groups = query.order_by(Group.created_at.desc()).offset(offset).limit(size).all()
+        
+        # GroupResponse로 변환
+        group_responses = []
+        for group in groups:
+            member_count = db.query(GroupMember).filter(
+                GroupMember.group_id == group.group_id,
+                GroupMember.is_active == True
+            ).count()
+            
+            like_count = db.query(GroupLike).filter(
+                GroupLike.group_id == group.group_id
+            ).count()
+            
+            is_liked = db.query(GroupLike).filter(
+                GroupLike.group_id == group.group_id,
+                GroupLike.user_id == current_user.user_id
+            ).first() is not None
+            
+            creator = db.query(User).filter(User.user_id == group.created_by).first()
+            
+            tags_list = []
+            if group.tags:
+                try:
+                    tags_list = json.loads(group.tags) if isinstance(group.tags, str) else group.tags
+                except:
+                    tags_list = []
+            
+            # rules를 JSON에서 리스트로 변환
+            rules_list = []
+            if group.rules:
+                try:
+                    rules_list = json.loads(group.rules) if isinstance(group.rules, str) else group.rules
+                except:
+                    rules_list = []
+            
+            # activity_plan을 JSON에서 리스트로 변환
+            activity_plan_list = []
+            if group.activity_plan:
+                try:
+                    activity_plan_list = json.loads(group.activity_plan) if isinstance(group.activity_plan, str) else group.activity_plan
+                except:
+                    activity_plan_list = []
+            
+            # regular_weekday를 JSON에서 리스트로 변환
+            weekday_list = []
+            if group.regular_weekday:
+                try:
+                    weekday_list = json.loads(group.regular_weekday) if isinstance(group.regular_weekday, str) else group.regular_weekday
+                except:
+                    weekday_list = []
+            
+            group_responses.append(GroupResponse(
+                group_id=group.group_id,
+                group_name=group.group_name,
+                description=group.description,
+                is_public=group.is_public,
+                requires_approval=group.requires_approval,
+                max_members=group.max_members,
+                category=group.category,
+                tags=tags_list,
+                primary_image_url=group.primary_image_url,
+                is_regular=group.is_regular,
+                regular_weekday=weekday_list,
+                regular_time=group.regular_time,
+                regular_location=group.regular_location,
+                rules=rules_list,
+                activity_plan=activity_plan_list,
+                created_by=group.created_by,
+                creator_name=creator.name if creator else "Unknown",
+                is_active=group.is_active,
+                member_count=member_count,
+                like_count=like_count,
+                is_liked=is_liked,
+                view_count=group.view_count,
+                pending_requests=0,
+                created_at=group.created_at,
+                updated_at=group.updated_at
+            ))
+        
+        return GroupListResponse(
+            groups=group_responses,
+            total_count=total_count
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="그룹 검색 중 오류가 발생했습니다."
+        )
+
+# =============================================================================
+# Phase 1: 멤버 관리 (가입 신청/승인/거절)
+# =============================================================================
+
+@app.post("/groups/{group_id}/join-request/")
+async def request_join_group(
+    group_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """그룹 가입 신청"""
+    try:
+        # 그룹 확인
+        group = db.query(Group).filter(
+            Group.group_id == group_id,
+            Group.is_active == True
+        ).first()
+        
+        if not group:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="그룹을 찾을 수 없습니다."
+            )
+        
+        # 이미 멤버인지 확인
+        existing_member = db.query(GroupMember).filter(
+            GroupMember.group_id == group_id,
+            GroupMember.user_id == current_user.user_id
+        ).first()
+        
+        if existing_member:
+            if existing_member.is_active:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="이미 그룹 멤버입니다."
+                )
+            elif existing_member.role == 'pending':
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="이미 가입 신청이 대기 중입니다."
+                )
+        
+        # 최대 멤버 수 확인
+        if group.max_members:
+            current_members = db.query(GroupMember).filter(
+                GroupMember.group_id == group_id,
+                GroupMember.is_active == True
+            ).count()
+            
+            if current_members >= group.max_members:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="그룹이 최대 인원에 도달했습니다."
+                )
+        
+        # 가입 신청 또는 즉시 가입
+        if group.requires_approval:
+            # 승인 필요 - pending 상태로 추가
+            new_member = GroupMember(
+                group_id=group_id,
+                user_id=current_user.user_id,
+                role='pending',
+                is_active=False
+            )
+            message = "가입 신청이 완료되었습니다. 관리자 승인을 기다려주세요."
+        else:
+            # 승인 불필요 - 즉시 가입
+            new_member = GroupMember(
+                group_id=group_id,
+                user_id=current_user.user_id,
+                role='member',
+                is_active=True
+            )
+            message = "그룹에 가입되었습니다!"
+        
+        db.add(new_member)
+        db.commit()
+        
+        
+        return {
+            "message": message,
+            "requires_approval": group.requires_approval,
+            "status": new_member.role
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="가입 신청 중 오류가 발생했습니다."
+        )
+
+@app.get("/groups/{group_id}/join-requests/")
+async def get_join_requests(
+    group_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """가입 신청 대기 목록 조회 (관리자 전용)"""
+    try:
+        # 그룹 확인
+        group = db.query(Group).filter(Group.group_id == group_id).first()
+        if not group:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="그룹을 찾을 수 없습니다."
+            )
+        
+        # 권한 확인 (그룹 생성자 또는 관리자만)
+        member = db.query(GroupMember).filter(
+            GroupMember.group_id == group_id,
+            GroupMember.user_id == current_user.user_id,
+            GroupMember.is_active == True
+        ).first()
+        
+        is_creator = group.created_by == current_user.user_id
+        is_admin = member and member.role in ['owner', 'admin']
+        
+        if not (is_creator or is_admin):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="관리자만 가입 신청 목록을 볼 수 있습니다."
+            )
+        
+        # 대기 중인 신청 조회
+        pending_requests = db.query(GroupMember).filter(
+            GroupMember.group_id == group_id,
+            GroupMember.role == 'pending'
+        ).all()
+        
+        # 사용자 정보 포함
+        request_list = []
+        for request in pending_requests:
+            user = db.query(User).filter(User.user_id == request.user_id).first()
+            if user:
+                request_list.append({
+                    "member_id": request.member_id,
+                    "user_id": user.user_id,
+                    "user_name": user.name,
+                    "email": user.email,
+                    "requested_at": request.joined_at
+                })
+        
+        return {
+            "requests": request_list,
+            "total_count": len(request_list)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="가입 신청 목록 조회 중 오류가 발생했습니다."
+        )
+
+@app.post("/groups/{group_id}/approve/{user_id}/")
+async def approve_join_request(
+    group_id: int,
+    user_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """가입 신청 승인 (관리자 전용)"""
+    try:
+        # 그룹 확인
+        group = db.query(Group).filter(Group.group_id == group_id).first()
+        if not group:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="그룹을 찾을 수 없습니다."
+            )
+        
+        # 권한 확인
+        member = db.query(GroupMember).filter(
+            GroupMember.group_id == group_id,
+            GroupMember.user_id == current_user.user_id,
+            GroupMember.is_active == True
+        ).first()
+        
+        is_creator = group.created_by == current_user.user_id
+        is_admin = member and member.role in ['owner', 'admin']
+        
+        if not (is_creator or is_admin):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="관리자만 가입을 승인할 수 있습니다."
+            )
+        
+        # 대기 중인 신청 찾기
+        pending_member = db.query(GroupMember).filter(
+            GroupMember.group_id == group_id,
+            GroupMember.user_id == user_id,
+            GroupMember.role == 'pending'
+        ).first()
+        
+        if not pending_member:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="해당 가입 신청을 찾을 수 없습니다."
+            )
+        
+        # 승인 처리
+        pending_member.role = 'member'
+        pending_member.is_active = True
+        db.commit()
+        
+        
+        return {
+            "message": "가입이 승인되었습니다.",
+            "user_id": user_id,
+            "group_id": group_id
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="가입 승인 중 오류가 발생했습니다."
+        )
+
+@app.post("/groups/{group_id}/reject/{user_id}/")
+async def reject_join_request(
+    group_id: int,
+    user_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """가입 신청 거절 (관리자 전용)"""
+    try:
+        # 그룹 확인
+        group = db.query(Group).filter(Group.group_id == group_id).first()
+        if not group:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="그룹을 찾을 수 없습니다."
+            )
+        
+        # 권한 확인
+        member = db.query(GroupMember).filter(
+            GroupMember.group_id == group_id,
+            GroupMember.user_id == current_user.user_id,
+            GroupMember.is_active == True
+        ).first()
+        
+        is_creator = group.created_by == current_user.user_id
+        is_admin = member and member.role in ['owner', 'admin']
+        
+        if not (is_creator or is_admin):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="관리자만 가입을 거절할 수 있습니다."
+            )
+        
+        # 대기 중인 신청 찾기
+        pending_member = db.query(GroupMember).filter(
+            GroupMember.group_id == group_id,
+            GroupMember.user_id == user_id,
+            GroupMember.role == 'pending'
+        ).first()
+        
+        if not pending_member:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="해당 가입 신청을 찾을 수 없습니다."
+            )
+        
+        # 거절 처리 (삭제)
+        db.delete(pending_member)
+        db.commit()
+        
+        
+        return {
+            "message": "가입이 거절되었습니다.",
+            "user_id": user_id,
+            "group_id": group_id
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="가입 거절 중 오류가 발생했습니다."
+        )
+
+# =============================================================================
+# 그룹 이벤트 API (Group Events)
+# =============================================================================
+
+@app.post("/groups/{group_id}/events/", response_model=GroupEventResponse, status_code=status.HTTP_201_CREATED)
+async def create_group_event(
+    group_id: int,
+    event_data: GroupEventCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """그룹 이벤트를 생성합니다."""
+    try:
+        # 그룹 존재 확인
+        group = db.query(Group).filter(
+            Group.group_id == group_id,
+            Group.is_active == True
+        ).first()
+        
+        if not group:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="그룹을 찾을 수 없습니다."
+            )
+        
+        # 그룹 멤버 권한 확인 (owner 또는 admin)
+        member = db.query(GroupMember).filter(
+            GroupMember.group_id == group_id,
+            GroupMember.user_id == current_user.user_id,
+            GroupMember.role.in_(['owner', 'admin']),
+            GroupMember.is_active == True
+        ).first()
+        
+        if not member:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="이벤트 생성 권한이 없습니다."
+            )
+        
+        # 이벤트 생성
+        new_event = GroupEvent(
+            group_id=group_id,
+            title=event_data.title,
+            description=event_data.description,
+            event_date=event_data.event_date,
+            event_time=event_data.event_time,
+            location=event_data.location,
+            max_attendees=event_data.max_attendees,
+            is_mandatory=event_data.is_mandatory,
+            created_by=current_user.user_id
+        )
+        
+        db.add(new_event)
+        db.commit()
+        db.refresh(new_event)
+        
+        # 참석자 수 계산
+        attendee_count = db.query(GroupEventAttendance).filter(
+            GroupEventAttendance.event_id == new_event.event_id
+        ).count()
+        
+        return GroupEventResponse(
+            event_id=new_event.event_id,
+            group_id=new_event.group_id,
+            title=new_event.title,
+            description=new_event.description,
+            event_date=new_event.event_date,
+            event_time=new_event.event_time,
+            location=new_event.location,
+            max_attendees=new_event.max_attendees,
+            is_mandatory=new_event.is_mandatory,
+            created_by=new_event.created_by,
+            creator_name=current_user.name,
+            attendee_count=attendee_count,
+            my_attendance=None,
+            created_at=new_event.created_at,
+            updated_at=new_event.updated_at
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="이벤트 생성 중 오류가 발생했습니다."
+        )
+
+@app.get("/groups/{group_id}/events/", response_model=GroupEventListResponse)
+async def get_group_events(
+    group_id: int,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    page: int = 1,
+    size: int = 20,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """그룹 이벤트 목록을 조회합니다."""
+    try:
+        # 그룹 멤버 확인
+        member = db.query(GroupMember).filter(
+            GroupMember.group_id == group_id,
+            GroupMember.user_id == current_user.user_id,
+            GroupMember.is_active == True
+        ).first()
+        
+        if not member:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="그룹 멤버만 이벤트를 조회할 수 있습니다."
+            )
+        
+        # 이벤트 조회
+        query = db.query(GroupEvent).filter(
+            GroupEvent.group_id == group_id,
+            GroupEvent.is_deleted == False
+        )
+        
+        # 날짜 필터
+        if start_date:
+            from datetime import datetime
+            start = datetime.strptime(start_date, "%Y-%m-%d").date()
+            query = query.filter(GroupEvent.event_date >= start)
+        if end_date:
+            from datetime import datetime
+            end = datetime.strptime(end_date, "%Y-%m-%d").date()
+            query = query.filter(GroupEvent.event_date <= end)
+        
+        # 전체 개수
+        total_count = query.count()
+        
+        # 페이지네이션
+        offset = (page - 1) * size
+        events = query.order_by(GroupEvent.event_date.asc()).offset(offset).limit(size).all()
+        
+        # 응답 생성
+        events_response = []
+        for event in events:
+            # 참석자 수
+            attendee_count = db.query(GroupEventAttendance).filter(
+                GroupEventAttendance.event_id == event.event_id
+            ).count()
+            
+            # 내 참석 상태
+            my_attendance_record = db.query(GroupEventAttendance).filter(
+                GroupEventAttendance.event_id == event.event_id,
+                GroupEventAttendance.user_id == current_user.user_id
+            ).first()
+            
+            my_attendance = my_attendance_record.status if my_attendance_record else None
+            
+            # 생성자 이름
+            creator = db.query(User).filter(User.user_id == event.created_by).first()
+            creator_name = creator.name if creator else "알 수 없음"
+            
+            events_response.append(GroupEventResponse(
+                event_id=event.event_id,
+                group_id=event.group_id,
+                title=event.title,
+                description=event.description,
+                event_date=event.event_date,
+                event_time=event.event_time,
+                location=event.location,
+                max_attendees=event.max_attendees,
+                is_mandatory=event.is_mandatory,
+                created_by=event.created_by,
+                creator_name=creator_name,
+                attendee_count=attendee_count,
+                my_attendance=my_attendance,
+                created_at=event.created_at,
+                updated_at=event.updated_at
+            ))
+        
+        return GroupEventListResponse(
+            events=events_response,
+            total_count=total_count
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="이벤트 목록 조회 중 오류가 발생했습니다."
+        )
+
+@app.put("/groups/{group_id}/events/{event_id}/", response_model=GroupEventResponse)
+async def update_group_event(
+    group_id: int,
+    event_id: int,
+    event_data: GroupEventUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """그룹 이벤트를 수정합니다."""
+    try:
+        # 이벤트 조회
+        event = db.query(GroupEvent).filter(
+            GroupEvent.event_id == event_id,
+            GroupEvent.group_id == group_id,
+            GroupEvent.is_deleted == False
+        ).first()
+        
+        if not event:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="이벤트를 찾을 수 없습니다."
+            )
+        
+        # 권한 확인 (owner, admin 또는 생성자)
+        member = db.query(GroupMember).filter(
+            GroupMember.group_id == group_id,
+            GroupMember.user_id == current_user.user_id,
+            GroupMember.is_active == True
+        ).first()
+        
+        if not member or (member.role not in ['owner', 'admin'] and event.created_by != current_user.user_id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="이벤트 수정 권한이 없습니다."
+            )
+        
+        # 업데이트
+        if event_data.title is not None:
+            event.title = event_data.title
+        if event_data.description is not None:
+            event.description = event_data.description
+        if event_data.event_date is not None:
+            event.event_date = event_data.event_date
+        if event_data.event_time is not None:
+            event.event_time = event_data.event_time
+        if event_data.location is not None:
+            event.location = event_data.location
+        if event_data.max_attendees is not None:
+            event.max_attendees = event_data.max_attendees
+        if event_data.is_mandatory is not None:
+            event.is_mandatory = event_data.is_mandatory
+        
+        db.commit()
+        db.refresh(event)
+        
+        # 응답 생성
+        attendee_count = db.query(GroupEventAttendance).filter(
+            GroupEventAttendance.event_id == event.event_id
+        ).count()
+        
+        my_attendance_record = db.query(GroupEventAttendance).filter(
+            GroupEventAttendance.event_id == event.event_id,
+            GroupEventAttendance.user_id == current_user.user_id
+        ).first()
+        
+        creator = db.query(User).filter(User.user_id == event.created_by).first()
+        
+        return GroupEventResponse(
+            event_id=event.event_id,
+            group_id=event.group_id,
+            title=event.title,
+            description=event.description,
+            event_date=event.event_date,
+            event_time=event.event_time,
+            location=event.location,
+            max_attendees=event.max_attendees,
+            is_mandatory=event.is_mandatory,
+            created_by=event.created_by,
+            creator_name=creator.name if creator else "알 수 없음",
+            attendee_count=attendee_count,
+            my_attendance=my_attendance_record.status if my_attendance_record else None,
+            created_at=event.created_at,
+            updated_at=event.updated_at
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="이벤트 수정 중 오류가 발생했습니다."
+        )
+
+@app.delete("/groups/{group_id}/events/{event_id}/")
+async def delete_group_event(
+    group_id: int,
+    event_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """그룹 이벤트를 삭제합니다."""
+    try:
+        # 이벤트 조회
+        event = db.query(GroupEvent).filter(
+            GroupEvent.event_id == event_id,
+            GroupEvent.group_id == group_id,
+            GroupEvent.is_deleted == False
+        ).first()
+        
+        if not event:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="이벤트를 찾을 수 없습니다."
+            )
+        
+        # 권한 확인 (owner, admin 또는 생성자)
+        member = db.query(GroupMember).filter(
+            GroupMember.group_id == group_id,
+            GroupMember.user_id == current_user.user_id,
+            GroupMember.is_active == True
+        ).first()
+        
+        if not member or (member.role not in ['owner', 'admin'] and event.created_by != current_user.user_id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="이벤트 삭제 권한이 없습니다."
+            )
+        
+        # 소프트 삭제
+        event.is_deleted = True
+        db.commit()
+        
+        return {"message": "이벤트가 삭제되었습니다."}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="이벤트 삭제 중 오류가 발생했습니다."
+        )
+
+@app.post("/groups/{group_id}/events/{event_id}/attend/", response_model=GroupEventAttendanceResponse)
+async def attend_group_event(
+    group_id: int,
+    event_id: int,
+    attendance_data: GroupEventAttendanceCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """그룹 이벤트 참석/불참을 등록합니다."""
+    try:
+        # 이벤트 조회
+        event = db.query(GroupEvent).filter(
+            GroupEvent.event_id == event_id,
+            GroupEvent.group_id == group_id,
+            GroupEvent.is_deleted == False
+        ).first()
+        
+        if not event:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="이벤트를 찾을 수 없습니다."
+            )
+        
+        # 그룹 멤버 확인
+        member = db.query(GroupMember).filter(
+            GroupMember.group_id == group_id,
+            GroupMember.user_id == current_user.user_id,
+            GroupMember.is_active == True
+        ).first()
+        
+        if not member:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="그룹 멤버만 이벤트에 참석할 수 있습니다."
+            )
+        
+        # 기존 참석 기록 확인
+        attendance = db.query(GroupEventAttendance).filter(
+            GroupEventAttendance.event_id == event_id,
+            GroupEventAttendance.user_id == current_user.user_id
+        ).first()
+        
+        if attendance:
+            # 업데이트
+            attendance.status = attendance_data.status
+        else:
+            # 신규 생성
+            attendance = GroupEventAttendance(
+                event_id=event_id,
+                user_id=current_user.user_id,
+                status=attendance_data.status
+            )
+            db.add(attendance)
+        
+        db.commit()
+        
+        # 참석자 수 계산
+        attendee_count = db.query(GroupEventAttendance).filter(
+            GroupEventAttendance.event_id == event_id,
+            GroupEventAttendance.status == 'attending'
+        ).count()
+        
+        return GroupEventAttendanceResponse(
+            message="참석 신청이 완료되었습니다.",
+            attendee_count=attendee_count,
+            my_attendance=attendance_data.status
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="이벤트 참석 처리 중 오류가 발생했습니다."
+        )
+
+# =============================================================================
+# 멤버 추방 API
+# =============================================================================
+
+@app.delete("/groups/{group_id}/members/{user_id}/")
+async def remove_group_member(
+    group_id: int,
+    user_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """그룹에서 멤버를 추방합니다."""
+    try:
+        # 그룹 존재 확인
+        group = db.query(Group).filter(
+            Group.group_id == group_id,
+            Group.is_active == True
+        ).first()
+        
+        if not group:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="그룹을 찾을 수 없습니다."
+            )
+        
+        # 권한 확인 (owner 또는 admin만 가능)
+        my_member = db.query(GroupMember).filter(
+            GroupMember.group_id == group_id,
+            GroupMember.user_id == current_user.user_id,
+            GroupMember.role.in_(['owner', 'admin']),
+            GroupMember.is_active == True
+        ).first()
+        
+        if not my_member:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="멤버 추방 권한이 없습니다."
+            )
+        
+        # 추방할 멤버 조회
+        target_member = db.query(GroupMember).filter(
+            GroupMember.group_id == group_id,
+            GroupMember.user_id == user_id,
+            GroupMember.is_active == True
+        ).first()
+        
+        if not target_member:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="멤버를 찾을 수 없습니다."
+            )
+        
+        # owner는 추방할 수 없음
+        if target_member.role == 'owner':
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="그룹 소유자는 추방할 수 없습니다."
+            )
+        
+        # 본인은 추방할 수 없음 (탈퇴 API 사용)
+        if user_id == current_user.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="본인은 추방할 수 없습니다. 탈퇴 API를 사용하세요."
+            )
+        
+        # 멤버 비활성화
+        target_member.is_active = False
+        target_member.left_at = db.func.current_timestamp()
+        
+        db.commit()
+        
+        # 추방된 사용자 정보
+        removed_user = db.query(User).filter(User.user_id == user_id).first()
+        
+        return {
+            "message": "멤버가 추방되었습니다.",
+            "removed_user_id": user_id,
+            "removed_user_name": removed_user.name if removed_user else "알 수 없음"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="멤버 추방 중 오류가 발생했습니다."
+        )
+
+# =============================================================================
+# 갤러리 좋아요/댓글 API
+# =============================================================================
+
+@app.post("/groups/{group_id}/gallery/{image_id}/like/", response_model=GalleryImageLikeResponse)
+async def toggle_gallery_image_like(
+    group_id: int,
+    image_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """갤러리 이미지 좋아요를 토글합니다."""
+    try:
+        # 이미지 존재 확인
+        image = db.query(GroupGallery).filter(
+            GroupGallery.image_id == image_id,
+            GroupGallery.group_id == group_id,
+            GroupGallery.is_deleted == False
+        ).first()
+        
+        if not image:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="이미지를 찾을 수 없습니다."
+            )
+        
+        # 그룹 멤버 확인
+        member = db.query(GroupMember).filter(
+            GroupMember.group_id == group_id,
+            GroupMember.user_id == current_user.user_id,
+            GroupMember.is_active == True
+        ).first()
+        
+        if not member:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="그룹 멤버만 좋아요를 할 수 있습니다."
+            )
+        
+        # 기존 좋아요 확인
+        existing_like = db.query(GalleryImageLike).filter(
+            GalleryImageLike.image_id == image_id,
+            GalleryImageLike.user_id == current_user.user_id
+        ).first()
+        
+        if existing_like:
+            # 좋아요 취소
+            db.delete(existing_like)
+            is_liked = False
+        else:
+            # 좋아요 추가
+            new_like = GalleryImageLike(
+                image_id=image_id,
+                user_id=current_user.user_id
+            )
+            db.add(new_like)
+            is_liked = True
+        
+        db.commit()
+        
+        # 좋아요 수 계산
+        like_count = db.query(GalleryImageLike).filter(
+            GalleryImageLike.image_id == image_id
+        ).count()
+        
+        return GalleryImageLikeResponse(
+            image_id=image_id,
+            like_count=like_count,
+            is_liked=is_liked
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="좋아요 처리 중 오류가 발생했습니다."
+        )
+
+@app.post("/groups/{group_id}/gallery/{image_id}/comments/", response_model=GalleryImageCommentResponse, status_code=status.HTTP_201_CREATED)
+async def create_gallery_comment(
+    group_id: int,
+    image_id: int,
+    comment_data: GalleryImageCommentCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """갤러리 이미지에 댓글을 작성합니다."""
+    try:
+        # 이미지 존재 확인
+        image = db.query(GroupGallery).filter(
+            GroupGallery.image_id == image_id,
+            GroupGallery.group_id == group_id,
+            GroupGallery.is_deleted == False
+        ).first()
+        
+        if not image:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="이미지를 찾을 수 없습니다."
+            )
+        
+        # 그룹 멤버 확인
+        member = db.query(GroupMember).filter(
+            GroupMember.group_id == group_id,
+            GroupMember.user_id == current_user.user_id,
+            GroupMember.is_active == True
+        ).first()
+        
+        if not member:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="그룹 멤버만 댓글을 작성할 수 있습니다."
+            )
+        
+        # 댓글 생성
+        new_comment = GalleryImageComment(
+            image_id=image_id,
+            user_id=current_user.user_id,
+            content=comment_data.content
+        )
+        
+        db.add(new_comment)
+        db.commit()
+        db.refresh(new_comment)
+        
+        return GalleryImageCommentResponse(
+            comment_id=new_comment.comment_id,
+            image_id=new_comment.image_id,
+            user_id=new_comment.user_id,
+            user_name=current_user.name,
+            content=new_comment.content,
+            is_deleted=new_comment.is_deleted,
+            created_at=new_comment.created_at,
+            updated_at=new_comment.updated_at
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="댓글 생성 중 오류가 발생했습니다."
+        )
+
+@app.get("/groups/{group_id}/gallery/{image_id}/comments/", response_model=GalleryImageCommentListResponse)
+async def get_gallery_comments(
+    group_id: int,
+    image_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """갤러리 이미지의 댓글 목록을 조회합니다."""
+    try:
+        # 그룹 멤버 확인
+        member = db.query(GroupMember).filter(
+            GroupMember.group_id == group_id,
+            GroupMember.user_id == current_user.user_id,
+            GroupMember.is_active == True
+        ).first()
+        
+        if not member:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="그룹 멤버만 댓글을 조회할 수 있습니다."
+            )
+        
+        # 댓글 조회
+        comments = db.query(GalleryImageComment).filter(
+            GalleryImageComment.image_id == image_id,
+            GalleryImageComment.is_deleted == False
+        ).order_by(GalleryImageComment.created_at.asc()).all()
+        
+        # 응답 생성
+        comments_response = []
+        for comment in comments:
+            user = db.query(User).filter(User.user_id == comment.user_id).first()
+            comments_response.append(GalleryImageCommentResponse(
+                comment_id=comment.comment_id,
+                image_id=comment.image_id,
+                user_id=comment.user_id,
+                user_name=user.name if user else "알 수 없음",
+                content=comment.content,
+                is_deleted=comment.is_deleted,
+                created_at=comment.created_at,
+                updated_at=comment.updated_at
+            ))
+        
+        return GalleryImageCommentListResponse(
+            comments=comments_response,
+            total_count=len(comments_response)
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="댓글 조회 중 오류가 발생했습니다."
+        )
+
+# =============================================================================
+# 게시글 좋아요 API
+# =============================================================================
+
+@app.post("/groups/{group_id}/posts/{post_id}/like/", response_model=GroupPostLikeResponse)
+async def toggle_post_like(
+    group_id: int,
+    post_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """게시글 좋아요를 토글합니다."""
+    try:
+        # 게시글 존재 확인
+        post = db.query(GroupPost).filter(
+            GroupPost.post_id == post_id,
+            GroupPost.group_id == group_id,
+            GroupPost.is_deleted == False
+        ).first()
+        
+        if not post:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="게시글을 찾을 수 없습니다."
+            )
+        
+        # 그룹 멤버 확인
+        member = db.query(GroupMember).filter(
+            GroupMember.group_id == group_id,
+            GroupMember.user_id == current_user.user_id,
+            GroupMember.is_active == True
+        ).first()
+        
+        if not member:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="그룹 멤버만 좋아요를 할 수 있습니다."
+            )
+        
+        # 기존 좋아요 확인
+        existing_like = db.query(GroupPostLike).filter(
+            GroupPostLike.post_id == post_id,
+            GroupPostLike.user_id == current_user.user_id
+        ).first()
+        
+        if existing_like:
+            # 좋아요 취소
+            db.delete(existing_like)
+            is_liked = False
+        else:
+            # 좋아요 추가
+            new_like = GroupPostLike(
+                post_id=post_id,
+                user_id=current_user.user_id
+            )
+            db.add(new_like)
+            is_liked = True
+        
+        db.commit()
+        
+        # 좋아요 수 계산
+        like_count = db.query(GroupPostLike).filter(
+            GroupPostLike.post_id == post_id
+        ).count()
+        
+        return GroupPostLikeResponse(
+            post_id=post_id,
+            like_count=like_count,
+            is_liked=is_liked
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="좋아요 처리 중 오류가 발생했습니다."
+        )
+
+# =============================================================================
+# 게시글 검색 API
+# =============================================================================
+
+@app.get("/groups/{group_id}/posts/search/", response_model=GroupPostSearchResponse)
+async def search_group_posts(
+    group_id: int,
+    q: str,
+    page: int = 1,
+    size: int = 20,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """게시글을 검색합니다 (제목 + 내용)."""
+    try:
+        # 멤버 확인
+        member = db.query(GroupMember).filter(
+            GroupMember.group_id == group_id,
+            GroupMember.user_id == current_user.user_id,
+            GroupMember.is_active == True
+        ).first()
+        
+        if not member:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="그룹 멤버만 게시글을 검색할 수 있습니다."
+            )
+        
+        # 검색
+        search_term = f"%{q}%"
+        query = db.query(GroupPost).filter(
+            GroupPost.group_id == group_id,
+            GroupPost.is_deleted == False,
+            (GroupPost.title.like(search_term) | GroupPost.content.like(search_term))
+        )
+        
+        total_count = query.count()
+        offset = (page - 1) * size
+        posts = query.order_by(GroupPost.created_at.desc()).offset(offset).limit(size).all()
+        
+        # 응답 생성
+        posts_response = []
+        for post in posts:
+            author = db.query(User).filter(User.user_id == post.author_id).first()
+            comment_count = db.query(GroupPostComment).filter(
+                GroupPostComment.post_id == post.post_id,
+                GroupPostComment.is_deleted == False
+            ).count()
+            
+            like_count = db.query(GroupPostLike).filter(
+                GroupPostLike.post_id == post.post_id
+            ).count()
+            
+            is_liked = db.query(GroupPostLike).filter(
+                GroupPostLike.post_id == post.post_id,
+                GroupPostLike.user_id == current_user.user_id
+            ).first() is not None
+            
+            posts_response.append(GroupPostResponse(
+                post_id=post.post_id,
+                group_id=post.group_id,
+                author_id=post.author_id,
+                author_name=author.name if author else "알 수 없음",
+                title=post.title,
+                content=post.content,
+                category=post.category or "일반",
+                is_pinned=post.is_pinned,
+                like_count=like_count,
+                is_liked=is_liked,
+                created_at=post.created_at,
+                updated_at=post.updated_at,
+                comment_count=comment_count
+            ))
+        
+        return GroupPostSearchResponse(
+            posts=posts_response,
+            total_count=total_count,
+            page=page,
+            size=size
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="게시글 검색 중 오류가 발생했습니다."
+        )
+
+# =============================================================================
+# 게시글 이미지 업로드 API
+# =============================================================================
+
+@app.post("/groups/{group_id}/posts/{post_id}/images/", response_model=GroupPostImageResponse, status_code=status.HTTP_201_CREATED)
+async def upload_post_image(
+    group_id: int,
+    post_id: int,
+    image: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """게시글에 이미지를 업로드합니다."""
+    try:
+        # 게시글 존재 확인
+        post = db.query(GroupPost).filter(
+            GroupPost.post_id == post_id,
+            GroupPost.group_id == group_id,
+            GroupPost.is_deleted == False
+        ).first()
+        
+        if not post:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="게시글을 찾을 수 없습니다."
+            )
+        
+        # 권한 확인 (작성자만 이미지 추가 가능)
+        if post.author_id != current_user.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="게시글 작성자만 이미지를 추가할 수 있습니다."
+            )
+        
+        # 이미지 저장
+        from app.services.image_service import save_image
+        image_url = await save_image(image, f"post_{post_id}")
+        
+        # 기존 이미지 개수 확인 (순서 결정)
+        max_order = db.query(func.max(GroupPostImage.display_order)).filter(
+            GroupPostImage.post_id == post_id,
+            GroupPostImage.is_deleted == False
+        ).scalar() or 0
+        
+        # 1. 게시글 이미지 테이블에 저장
+        post_image = GroupPostImage(
+            post_id=post_id,
+            image_url=image_url,
+            file_name=image.filename,
+            file_size=0,  # 실제 파일 크기 계산 필요
+            display_order=max_order + 1
+        )
+        db.add(post_image)
+        
+        # 2. 갤러리에도 동시에 저장
+        gallery_image = GroupGallery(
+            group_id=group_id,
+            uploaded_by=current_user.user_id,
+            image_url=image_url,
+            file_name=image.filename,
+            file_size=0,
+            description=f"게시글 '{post.title}'의 이미지"
+        )
+        db.add(gallery_image)
+        
+        db.commit()
+        db.refresh(post_image)
+        
+        
+        return GroupPostImageResponse(
+            image_id=post_image.image_id,
+            post_id=post_image.post_id,
+            image_url=post_image.image_url,
+            created_at=post_image.created_at
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="이미지 업로드 중 오류가 발생했습니다."
+        )
+
+@app.delete("/groups/{group_id}/posts/{post_id}/images/{image_id}")
+async def delete_post_image(
+    group_id: int,
+    post_id: int,
+    image_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """게시글 이미지를 삭제합니다."""
+    try:
+        # 이미지 조회
+        post_image = db.query(GroupPostImage).filter(
+            GroupPostImage.image_id == image_id,
+            GroupPostImage.post_id == post_id,
+            GroupPostImage.is_deleted == False
+        ).first()
+        
+        if not post_image:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="이미지를 찾을 수 없습니다."
+            )
+        
+        # 게시글 작성자 확인
+        post = db.query(GroupPost).filter(GroupPost.post_id == post_id).first()
+        if not post or post.author_id != current_user.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="이미지 삭제 권한이 없습니다."
+            )
+        
+        # 소프트 삭제
+        post_image.is_deleted = True
+        db.commit()
+        
+        return {"message": "이미지가 삭제되었습니다."}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="이미지 삭제 중 오류가 발생했습니다."
+        )
+
+# =============================================================================
+# 댓글 좋아요 API
+# =============================================================================
+
+@app.post("/groups/{group_id}/posts/{post_id}/comments/{comment_id}/like/", response_model=GroupPostCommentLikeResponse)
+async def toggle_comment_like(
+    group_id: int,
+    post_id: int,
+    comment_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """댓글 좋아요를 토글합니다."""
+    try:
+        # 댓글 존재 확인
+        comment = db.query(GroupPostComment).filter(
+            GroupPostComment.comment_id == comment_id,
+            GroupPostComment.post_id == post_id,
+            GroupPostComment.is_deleted == False
+        ).first()
+        
+        if not comment:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="댓글을 찾을 수 없습니다."
+            )
+        
+        # 그룹 멤버 확인
+        member = db.query(GroupMember).filter(
+            GroupMember.group_id == group_id,
+            GroupMember.user_id == current_user.user_id,
+            GroupMember.is_active == True
+        ).first()
+        
+        if not member:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="그룹 멤버만 댓글에 좋아요를 할 수 있습니다."
+            )
+        
+        # 기존 좋아요 확인
+        existing_like = db.query(GroupPostCommentLike).filter(
+            GroupPostCommentLike.comment_id == comment_id,
+            GroupPostCommentLike.user_id == current_user.user_id
+        ).first()
+        
+        if existing_like:
+            # 좋아요 취소
+            db.delete(existing_like)
+            is_liked = False
+        else:
+            # 좋아요 추가
+            new_like = GroupPostCommentLike(
+                comment_id=comment_id,
+                user_id=current_user.user_id
+            )
+            db.add(new_like)
+            is_liked = True
+        
+        db.commit()
+        
+        # 좋아요 수 계산
+        like_count = db.query(GroupPostCommentLike).filter(
+            GroupPostCommentLike.comment_id == comment_id
+        ).count()
+        
+        return GroupPostCommentLikeResponse(
+            comment_id=comment_id,
+            like_count=like_count,
+            is_liked=is_liked
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="댓글 좋아요 처리 중 오류가 발생했습니다."
+        )
+
+# =============================================================================
+# 마이페이지 - 활동 내역 API
+# =============================================================================
+
+@app.get("/users/me/posts/", response_model=GroupPostListResponse)
+async def get_my_posts(
+    page: int = 1,
+    size: int = 20,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """내가 작성한 게시글 목록을 조회합니다."""
+    try:
+        # 내가 쓴 게시글 조회
+        query = db.query(GroupPost).filter(
+            GroupPost.author_id == current_user.user_id,
+            GroupPost.is_deleted == False
+        )
+        
+        total_count = query.count()
+        offset = (page - 1) * size
+        posts = query.order_by(GroupPost.created_at.desc()).offset(offset).limit(size).all()
+        
+        # 응답 생성
+        posts_response = []
+        for post in posts:
+            # 그룹 정보 조회
+            group = db.query(Group).filter(Group.group_id == post.group_id).first()
+            
+            comment_count = db.query(GroupPostComment).filter(
+                GroupPostComment.post_id == post.post_id,
+                GroupPostComment.is_deleted == False
+            ).count()
+            
+            like_count = db.query(GroupPostLike).filter(
+                GroupPostLike.post_id == post.post_id
+            ).count()
+            
+            is_liked = db.query(GroupPostLike).filter(
+                GroupPostLike.post_id == post.post_id,
+                GroupPostLike.user_id == current_user.user_id
+            ).first() is not None
+            
+            posts_response.append(GroupPostResponse(
+                post_id=post.post_id,
+                group_id=post.group_id,
+                author_id=post.author_id,
+                author_name=current_user.name,
+                title=post.title,
+                content=post.content,
+                category=post.category or "일반",
+                is_pinned=post.is_pinned,
+                like_count=like_count,
+                is_liked=is_liked,
+                created_at=post.created_at,
+                updated_at=post.updated_at,
+                comment_count=comment_count
+            ))
+        
+        return GroupPostListResponse(
+            posts=posts_response,
+            total_count=total_count
+        )
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="게시글 조회 중 오류가 발생했습니다."
+        )
+
+@app.get("/users/me/comments/", response_model=GroupPostCommentListResponse)
+async def get_my_comments(
+    page: int = 1,
+    size: int = 20,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """내가 작성한 댓글 목록을 조회합니다."""
+    try:
+        # 내가 쓴 댓글 조회
+        query = db.query(GroupPostComment).filter(
+            GroupPostComment.author_id == current_user.user_id,
+            GroupPostComment.is_deleted == False
+        )
+        
+        total_count = query.count()
+        offset = (page - 1) * size
+        comments = query.order_by(GroupPostComment.created_at.desc()).offset(offset).limit(size).all()
+        
+        # 응답 생성
+        comments_response = []
+        for comment in comments:
+            # 게시글 정보 조회
+            post = db.query(GroupPost).filter(GroupPost.post_id == comment.post_id).first()
+            
+            # 그룹 정보 조회
+            group = None
+            if post:
+                group = db.query(Group).filter(Group.group_id == post.group_id).first()
+            
+            # 좋아요 수 계산
+            like_count = db.query(GroupPostCommentLike).filter(
+                GroupPostCommentLike.comment_id == comment.comment_id
+            ).count()
+            
+            is_liked = db.query(GroupPostCommentLike).filter(
+                GroupPostCommentLike.comment_id == comment.comment_id,
+                GroupPostCommentLike.user_id == current_user.user_id
+            ).first() is not None
+            
+            comments_response.append(GroupPostCommentResponse(
+                comment_id=comment.comment_id,
+                post_id=comment.post_id,
+                author_id=comment.author_id,
+                author_name=current_user.name,
+                content=comment.content,
+                parent_comment_id=comment.parent_comment_id,
+                is_deleted=comment.is_deleted,
+                like_count=like_count,
+                is_liked=is_liked,
+                created_at=comment.created_at,
+                updated_at=comment.updated_at
+            ))
+        
+        return GroupPostCommentListResponse(
+            comments=comments_response,
+            total_count=total_count
+        )
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="댓글 조회 중 오류가 발생했습니다."
+        )
+
+
+# =============================================================================
+# 구해요 (구인구직) API
+# =============================================================================
+
+def calculate_is_urgent(deadline_at: datetime) -> bool:
+    """마감임박 여부 계산 (24시간 이내)"""
+    if not deadline_at:
+        return False
+    now = datetime.now()
+    time_diff = deadline_at - now
+    return 0 < time_diff.total_seconds() <= 24 * 60 * 60
+
+def calculate_is_closed(deadline_at: datetime, is_closed: bool) -> bool:
+    """마감 여부 계산"""
+    if is_closed:
+        return True
+    if deadline_at and deadline_at < datetime.now():
+        return True
+    return False
+
+# -----------------------------------------------------------------------------
+# 게시글 CRUD
+# -----------------------------------------------------------------------------
+
+@app.get("/recruit/posts/", response_model=RecruitPostListResponse)
+async def get_recruit_posts(
+    page: int = 1,
+    size: int = 20,
+    category: Optional[str] = None,
+    sort: str = "latest",  # latest, popular, deadline
+    q: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """구해요 게시글 목록 조회"""
+    try:
+        query = db.query(RecruitPost).filter(RecruitPost.is_deleted == False)
+        
+        # 카테고리 필터
+        if category and category != "전체":
+            query = query.filter(RecruitPost.category == category)
+        
+        # 검색어 필터
+        if q:
+            search_term = f"%{q}%"
+            query = query.filter(
+                (RecruitPost.title.like(search_term)) |
+                (RecruitPost.content.like(search_term)) |
+                (RecruitPost.tags.like(search_term))
+            )
+        
+        # 정렬
+        if sort == "popular":
+            query = query.order_by(RecruitPost.like_count.desc(), RecruitPost.created_at.desc())
+        elif sort == "deadline":
+            query = query.filter(RecruitPost.deadline_at != None).order_by(RecruitPost.deadline_at.asc())
+        else:  # latest
+            query = query.order_by(RecruitPost.created_at.desc())
+        
+        total_count = query.count()
+        offset = (page - 1) * size
+        posts = query.offset(offset).limit(size).all()
+        
+        posts_response = []
+        for post in posts:
+            author = db.query(User).filter(User.user_id == post.author_id).first()
+            # 대표 프로필 이미지 조회
+            author_image = db.query(UserImage).filter(
+                UserImage.user_id == post.author_id,
+                UserImage.is_primary == True
+            ).first()
+            
+            is_liked = db.query(RecruitPostLike).filter(
+                RecruitPostLike.post_id == post.post_id,
+                RecruitPostLike.user_id == current_user.user_id
+            ).first() is not None
+            
+            # JSON 파싱
+            tags_list = []
+            if post.tags:
+                try:
+                    tags_list = json.loads(post.tags) if isinstance(post.tags, str) else post.tags
+                except:
+                    tags_list = []
+            
+            questions_list = []
+            if post.questions:
+                try:
+                    questions_list = json.loads(post.questions) if isinstance(post.questions, str) else post.questions
+                except:
+                    questions_list = []
+            
+            posts_response.append(RecruitPostResponse(
+                post_id=post.post_id,
+                author_id=post.author_id,
+                author_name=author.name if author else "Unknown",
+                author_profile_image=author_image.image_url if author_image else None,
+                title=post.title,
+                content=post.content,
+                image_url=post.image_url,
+                category=post.category,
+                tags=tags_list,
+                headcount=post.headcount,
+                deadline_at=post.deadline_at,
+                questions=questions_list,
+                view_count=post.view_count,
+                like_count=post.like_count,
+                comment_count=post.comment_count,
+                is_liked=is_liked,
+                is_urgent=calculate_is_urgent(post.deadline_at),
+                is_closed=calculate_is_closed(post.deadline_at, post.is_closed),
+                created_at=post.created_at,
+                updated_at=post.updated_at
+            ))
+        
+        return RecruitPostListResponse(
+            posts=posts_response,
+            total_count=total_count,
+            page=page,
+            size=size
+        )
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="게시글 목록 조회 중 오류가 발생했습니다."
+        )
+
+
+@app.get("/recruit/posts/{post_id}", response_model=RecruitPostResponse)
+async def get_recruit_post(
+    post_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """구해요 게시글 상세 조회"""
+    try:
+        post = db.query(RecruitPost).filter(
+            RecruitPost.post_id == post_id,
+            RecruitPost.is_deleted == False
+        ).first()
+        
+        if not post:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="게시글을 찾을 수 없습니다."
+            )
+        
+        # 조회수 증가
+        post.view_count += 1
+        db.commit()
+        
+        author = db.query(User).filter(User.user_id == post.author_id).first()
+        # 대표 프로필 이미지 조회
+        author_image = db.query(UserImage).filter(
+            UserImage.user_id == post.author_id,
+            UserImage.is_primary == True
+        ).first()
+        
+        is_liked = db.query(RecruitPostLike).filter(
+            RecruitPostLike.post_id == post.post_id,
+            RecruitPostLike.user_id == current_user.user_id
+        ).first() is not None
+        
+        # JSON 파싱
+        tags_list = []
+        if post.tags:
+            try:
+                tags_list = json.loads(post.tags) if isinstance(post.tags, str) else post.tags
+            except:
+                tags_list = []
+        
+        questions_list = []
+        if post.questions:
+            try:
+                questions_list = json.loads(post.questions) if isinstance(post.questions, str) else post.questions
+            except:
+                questions_list = []
+        
+        return RecruitPostResponse(
+            post_id=post.post_id,
+            author_id=post.author_id,
+            author_name=author.name if author else "Unknown",
+            author_profile_image=author_image.image_url if author_image else None,
+            title=post.title,
+            content=post.content,
+            image_url=post.image_url,
+            category=post.category,
+            tags=tags_list,
+            headcount=post.headcount,
+            deadline_at=post.deadline_at,
+            questions=questions_list,
+            view_count=post.view_count,
+            like_count=post.like_count,
+            comment_count=post.comment_count,
+            is_liked=is_liked,
+            is_urgent=calculate_is_urgent(post.deadline_at),
+            is_closed=calculate_is_closed(post.deadline_at, post.is_closed),
+            created_at=post.created_at,
+            updated_at=post.updated_at
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="게시글 조회 중 오류가 발생했습니다."
+        )
+
+
+@app.post("/recruit/posts/", response_model=RecruitPostResponse, status_code=status.HTTP_201_CREATED)
+async def create_recruit_post(
+    post_data: RecruitPostCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """구해요 게시글 생성"""
+    try:
+        # JSON 변환
+        tags_json = json.dumps(post_data.tags, ensure_ascii=False) if post_data.tags else None
+        questions_json = json.dumps(post_data.questions, ensure_ascii=False) if post_data.questions else None
+        
+        new_post = RecruitPost(
+            author_id=current_user.user_id,
+            title=post_data.title,
+            content=post_data.content,
+            image_url=post_data.image_url,
+            category=post_data.category,
+            tags=tags_json,
+            headcount=post_data.headcount,
+            deadline_at=post_data.deadline_at,
+            questions=questions_json
+        )
+        
+        db.add(new_post)
+        db.commit()
+        db.refresh(new_post)
+        
+        # 대표 프로필 이미지 조회
+        author_image = db.query(UserImage).filter(
+            UserImage.user_id == current_user.user_id,
+            UserImage.is_primary == True
+        ).first()
+        
+        return RecruitPostResponse(
+            post_id=new_post.post_id,
+            author_id=new_post.author_id,
+            author_name=current_user.name,
+            author_profile_image=author_image.image_url if author_image else None,
+            title=new_post.title,
+            content=new_post.content,
+            image_url=new_post.image_url,
+            category=new_post.category,
+            tags=post_data.tags or [],
+            headcount=new_post.headcount,
+            deadline_at=new_post.deadline_at,
+            questions=post_data.questions or [],
+            view_count=0,
+            like_count=0,
+            comment_count=0,
+            is_liked=False,
+            is_urgent=calculate_is_urgent(new_post.deadline_at),
+            is_closed=False,
+            created_at=new_post.created_at,
+            updated_at=new_post.updated_at
+        )
+        
+    except Exception as e:
+        db.rollback()
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="게시글 생성 중 오류가 발생했습니다."
+        )
+
+
+@app.put("/recruit/posts/{post_id}", response_model=RecruitPostResponse)
+async def update_recruit_post(
+    post_id: int,
+    post_data: RecruitPostUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """구해요 게시글 수정"""
+    try:
+        post = db.query(RecruitPost).filter(
+            RecruitPost.post_id == post_id,
+            RecruitPost.is_deleted == False
+        ).first()
+        
+        if not post:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="게시글을 찾을 수 없습니다."
+            )
+        
+        if post.author_id != current_user.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="게시글 수정 권한이 없습니다."
+            )
+        
+        # 업데이트
+        if post_data.title is not None:
+            post.title = post_data.title
+        if post_data.content is not None:
+            post.content = post_data.content
+        if post_data.image_url is not None:
+            post.image_url = post_data.image_url
+        if post_data.category is not None:
+            post.category = post_data.category
+        if post_data.tags is not None:
+            post.tags = json.dumps(post_data.tags, ensure_ascii=False)
+        if post_data.headcount is not None:
+            post.headcount = post_data.headcount
+        if post_data.deadline_at is not None:
+            post.deadline_at = post_data.deadline_at
+        if post_data.questions is not None:
+            post.questions = json.dumps(post_data.questions, ensure_ascii=False)
+        if post_data.is_closed is not None:
+            post.is_closed = post_data.is_closed
+        
+        db.commit()
+        db.refresh(post)
+        
+        # 대표 프로필 이미지 조회
+        author_image = db.query(UserImage).filter(
+            UserImage.user_id == current_user.user_id,
+            UserImage.is_primary == True
+        ).first()
+        
+        is_liked = db.query(RecruitPostLike).filter(
+            RecruitPostLike.post_id == post.post_id,
+            RecruitPostLike.user_id == current_user.user_id
+        ).first() is not None
+        
+        # JSON 파싱
+        tags_list = []
+        if post.tags:
+            try:
+                tags_list = json.loads(post.tags)
+            except:
+                tags_list = []
+        
+        questions_list = []
+        if post.questions:
+            try:
+                questions_list = json.loads(post.questions)
+            except:
+                questions_list = []
+        
+        return RecruitPostResponse(
+            post_id=post.post_id,
+            author_id=post.author_id,
+            author_name=current_user.name,
+            author_profile_image=author_image.image_url if author_image else None,
+            title=post.title,
+            content=post.content,
+            image_url=post.image_url,
+            category=post.category,
+            tags=tags_list,
+            headcount=post.headcount,
+            deadline_at=post.deadline_at,
+            questions=questions_list,
+            view_count=post.view_count,
+            like_count=post.like_count,
+            comment_count=post.comment_count,
+            is_liked=is_liked,
+            is_urgent=calculate_is_urgent(post.deadline_at),
+            is_closed=calculate_is_closed(post.deadline_at, post.is_closed),
+            created_at=post.created_at,
+            updated_at=post.updated_at
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="게시글 수정 중 오류가 발생했습니다."
+        )
+
+
+@app.delete("/recruit/posts/{post_id}")
+async def delete_recruit_post(
+    post_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """구해요 게시글 삭제"""
+    try:
+        post = db.query(RecruitPost).filter(
+            RecruitPost.post_id == post_id,
+            RecruitPost.is_deleted == False
+        ).first()
+        
+        if not post:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="게시글을 찾을 수 없습니다."
+            )
+        
+        if post.author_id != current_user.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="게시글 삭제 권한이 없습니다."
+            )
+        
+        post.is_deleted = True
+        db.commit()
+        
+        return {"message": "게시글이 삭제되었습니다."}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="게시글 삭제 중 오류가 발생했습니다."
+        )
+
+
+# -----------------------------------------------------------------------------
+# 좋아요
+# -----------------------------------------------------------------------------
+
+@app.post("/recruit/posts/{post_id}/like/", response_model=RecruitPostLikeResponse)
+async def toggle_recruit_post_like(
+    post_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """구해요 게시글 좋아요 토글"""
+    try:
+        post = db.query(RecruitPost).filter(
+            RecruitPost.post_id == post_id,
+            RecruitPost.is_deleted == False
+        ).first()
+        
+        if not post:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="게시글을 찾을 수 없습니다."
+            )
+        
+        existing_like = db.query(RecruitPostLike).filter(
+            RecruitPostLike.post_id == post_id,
+            RecruitPostLike.user_id == current_user.user_id
+        ).first()
+        
+        if existing_like:
+            db.delete(existing_like)
+            post.like_count = max(0, post.like_count - 1)
+            is_liked = False
+        else:
+            new_like = RecruitPostLike(
+                post_id=post_id,
+                user_id=current_user.user_id
+            )
+            db.add(new_like)
+            post.like_count += 1
+            is_liked = True
+        
+        db.commit()
+        
+        return RecruitPostLikeResponse(
+            post_id=post_id,
+            like_count=post.like_count,
+            is_liked=is_liked
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="좋아요 처리 중 오류가 발생했습니다."
+        )
+
+
+# -----------------------------------------------------------------------------
+# 댓글
+# -----------------------------------------------------------------------------
+
+@app.get("/recruit/posts/{post_id}/comments/", response_model=RecruitCommentListResponse)
+async def get_recruit_comments(
+    post_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """구해요 게시글 댓글 목록 조회"""
+    try:
+        post = db.query(RecruitPost).filter(
+            RecruitPost.post_id == post_id,
+            RecruitPost.is_deleted == False
+        ).first()
+        
+        if not post:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="게시글을 찾을 수 없습니다."
+            )
+        
+        # 최상위 댓글만 조회
+        comments = db.query(RecruitPostComment).filter(
+            RecruitPostComment.post_id == post_id,
+            RecruitPostComment.parent_comment_id == None,
+            RecruitPostComment.is_deleted == False
+        ).order_by(RecruitPostComment.created_at.asc()).all()
+        
+        def build_comment_response(comment):
+            author = db.query(User).filter(User.user_id == comment.author_id).first()
+            # 대표 프로필 이미지 조회
+            author_image = db.query(UserImage).filter(
+                UserImage.user_id == comment.author_id,
+                UserImage.is_primary == True
+            ).first()
+            
+            # 대댓글 조회
+            replies = db.query(RecruitPostComment).filter(
+                RecruitPostComment.parent_comment_id == comment.comment_id,
+                RecruitPostComment.is_deleted == False
+            ).order_by(RecruitPostComment.created_at.asc()).all()
+            
+            replies_response = []
+            for reply in replies:
+                reply_author = db.query(User).filter(User.user_id == reply.author_id).first()
+                reply_image = db.query(UserImage).filter(
+                    UserImage.user_id == reply.author_id,
+                    UserImage.is_primary == True
+                ).first()
+                replies_response.append(RecruitCommentResponse(
+                    comment_id=reply.comment_id,
+                    post_id=reply.post_id,
+                    author_id=reply.author_id,
+                    author_name=reply_author.name if reply_author else "Unknown",
+                    author_profile_image=reply_image.image_url if reply_image else None,
+                    content=reply.content,
+                    parent_comment_id=reply.parent_comment_id,
+                    is_deleted=reply.is_deleted,
+                    created_at=reply.created_at,
+                    updated_at=reply.updated_at,
+                    replies=[]
+                ))
+            
+            return RecruitCommentResponse(
+                comment_id=comment.comment_id,
+                post_id=comment.post_id,
+                author_id=comment.author_id,
+                author_name=author.name if author else "Unknown",
+                author_profile_image=author_image.image_url if author_image else None,
+                content=comment.content,
+                parent_comment_id=comment.parent_comment_id,
+                is_deleted=comment.is_deleted,
+                created_at=comment.created_at,
+                updated_at=comment.updated_at,
+                replies=replies_response
+            )
+        
+        comments_response = [build_comment_response(c) for c in comments]
+        total_count = db.query(RecruitPostComment).filter(
+            RecruitPostComment.post_id == post_id,
+            RecruitPostComment.is_deleted == False
+        ).count()
+        
+        return RecruitCommentListResponse(
+            comments=comments_response,
+            total_count=total_count
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="댓글 목록 조회 중 오류가 발생했습니다."
+        )
+
+
+@app.post("/recruit/posts/{post_id}/comments/", response_model=RecruitCommentResponse, status_code=status.HTTP_201_CREATED)
+async def create_recruit_comment(
+    post_id: int,
+    comment_data: RecruitCommentCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """구해요 게시글 댓글 작성"""
+    try:
+        post = db.query(RecruitPost).filter(
+            RecruitPost.post_id == post_id,
+            RecruitPost.is_deleted == False
+        ).first()
+        
+        if not post:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="게시글을 찾을 수 없습니다."
+            )
+        
+        # 대댓글인 경우 부모 댓글 확인
+        if comment_data.parent_comment_id:
+            parent = db.query(RecruitPostComment).filter(
+                RecruitPostComment.comment_id == comment_data.parent_comment_id,
+                RecruitPostComment.is_deleted == False
+            ).first()
+            if not parent:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="부모 댓글을 찾을 수 없습니다."
+                )
+        
+        new_comment = RecruitPostComment(
+            post_id=post_id,
+            author_id=current_user.user_id,
+            content=comment_data.content,
+            parent_comment_id=comment_data.parent_comment_id
+        )
+        
+        db.add(new_comment)
+        post.comment_count += 1
+        db.commit()
+        db.refresh(new_comment)
+        
+        # 대표 프로필 이미지 조회
+        author_image = db.query(UserImage).filter(
+            UserImage.user_id == current_user.user_id,
+            UserImage.is_primary == True
+        ).first()
+        
+        return RecruitCommentResponse(
+            comment_id=new_comment.comment_id,
+            post_id=new_comment.post_id,
+            author_id=new_comment.author_id,
+            author_name=current_user.name,
+            author_profile_image=author_image.image_url if author_image else None,
+            content=new_comment.content,
+            parent_comment_id=new_comment.parent_comment_id,
+            is_deleted=new_comment.is_deleted,
+            created_at=new_comment.created_at,
+            updated_at=new_comment.updated_at,
+            replies=[]
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="댓글 작성 중 오류가 발생했습니다."
+        )
+
+
+@app.put("/recruit/posts/{post_id}/comments/{comment_id}", response_model=RecruitCommentResponse)
+async def update_recruit_comment(
+    post_id: int,
+    comment_id: int,
+    comment_data: RecruitCommentUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """구해요 게시글 댓글 수정"""
+    try:
+        comment = db.query(RecruitPostComment).filter(
+            RecruitPostComment.comment_id == comment_id,
+            RecruitPostComment.post_id == post_id,
+            RecruitPostComment.is_deleted == False
+        ).first()
+        
+        if not comment:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="댓글을 찾을 수 없습니다."
+            )
+        
+        if comment.author_id != current_user.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="댓글 수정 권한이 없습니다."
+            )
+        
+        comment.content = comment_data.content
+        db.commit()
+        db.refresh(comment)
+        
+        # 대표 프로필 이미지 조회
+        author_image = db.query(UserImage).filter(
+            UserImage.user_id == current_user.user_id,
+            UserImage.is_primary == True
+        ).first()
+        
+        return RecruitCommentResponse(
+            comment_id=comment.comment_id,
+            post_id=comment.post_id,
+            author_id=comment.author_id,
+            author_name=current_user.name,
+            author_profile_image=author_image.image_url if author_image else None,
+            content=comment.content,
+            parent_comment_id=comment.parent_comment_id,
+            is_deleted=comment.is_deleted,
+            created_at=comment.created_at,
+            updated_at=comment.updated_at,
+            replies=[]
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="댓글 수정 중 오류가 발생했습니다."
+        )
+
+
+@app.delete("/recruit/posts/{post_id}/comments/{comment_id}")
+async def delete_recruit_comment(
+    post_id: int,
+    comment_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """구해요 게시글 댓글 삭제"""
+    try:
+        comment = db.query(RecruitPostComment).filter(
+            RecruitPostComment.comment_id == comment_id,
+            RecruitPostComment.post_id == post_id,
+            RecruitPostComment.is_deleted == False
+        ).first()
+        
+        if not comment:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="댓글을 찾을 수 없습니다."
+            )
+        
+        if comment.author_id != current_user.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="댓글 삭제 권한이 없습니다."
+            )
+        
+        comment.is_deleted = True
+        
+        # 게시글 댓글 수 감소
+        post = db.query(RecruitPost).filter(RecruitPost.post_id == post_id).first()
+        if post:
+            post.comment_count = max(0, post.comment_count - 1)
+        
+        db.commit()
+        
+        return {"message": "댓글이 삭제되었습니다."}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="댓글 삭제 중 오류가 발생했습니다."
+        )
+
+
+# -----------------------------------------------------------------------------
+# 지원서
+# -----------------------------------------------------------------------------
+
+@app.post("/recruit/posts/{post_id}/applications/", response_model=RecruitApplicationResponse, status_code=status.HTTP_201_CREATED)
+async def create_recruit_application(
+    post_id: int,
+    application_data: RecruitApplicationCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """구해요 게시글에 지원서 제출"""
+    try:
+        post = db.query(RecruitPost).filter(
+            RecruitPost.post_id == post_id,
+            RecruitPost.is_deleted == False
+        ).first()
+        
+        if not post:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="게시글을 찾을 수 없습니다."
+            )
+        
+        if post.author_id == current_user.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="본인 게시글에는 지원할 수 없습니다."
+            )
+        
+        if calculate_is_closed(post.deadline_at, post.is_closed):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="모집이 마감되었습니다."
+            )
+        
+        # 중복 지원 확인
+        existing = db.query(RecruitApplication).filter(
+            RecruitApplication.post_id == post_id,
+            RecruitApplication.applicant_id == current_user.user_id
+        ).first()
+        
+        if existing:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="이미 지원한 게시글입니다."
+            )
+        
+        # 답변을 JSON으로 변환
+        answers_json = json.dumps([a.model_dump() for a in application_data.answers], ensure_ascii=False)
+        
+        new_application = RecruitApplication(
+            post_id=post_id,
+            applicant_id=current_user.user_id,
+            answers=answers_json
+        )
+        
+        db.add(new_application)
+        db.commit()
+        db.refresh(new_application)
+        
+        # 대표 프로필 이미지 조회
+        applicant_image = db.query(UserImage).filter(
+            UserImage.user_id == current_user.user_id,
+            UserImage.is_primary == True
+        ).first()
+        
+        return RecruitApplicationResponse(
+            application_id=new_application.application_id,
+            post_id=new_application.post_id,
+            applicant_id=new_application.applicant_id,
+            applicant_name=current_user.name,
+            applicant_profile_image=applicant_image.image_url if applicant_image else None,
+            answers=application_data.answers,
+            status=new_application.status,
+            is_read=new_application.is_read,
+            created_at=new_application.created_at,
+            updated_at=new_application.updated_at
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="지원서 제출 중 오류가 발생했습니다."
+        )
+
+
+@app.get("/recruit/posts/{post_id}/applications/", response_model=RecruitApplicationListResponse)
+async def get_recruit_applications(
+    post_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """구해요 게시글에 받은 지원서 목록 조회 (작성자 전용)"""
+    try:
+        post = db.query(RecruitPost).filter(
+            RecruitPost.post_id == post_id,
+            RecruitPost.is_deleted == False
+        ).first()
+        
+        if not post:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="게시글을 찾을 수 없습니다."
+            )
+        
+        if post.author_id != current_user.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="지원서를 볼 권한이 없습니다."
+            )
+        
+        applications = db.query(RecruitApplication).filter(
+            RecruitApplication.post_id == post_id
+        ).order_by(RecruitApplication.created_at.desc()).all()
+        
+        applications_response = []
+        for app in applications:
+            applicant = db.query(User).filter(User.user_id == app.applicant_id).first()
+            # 대표 프로필 이미지 조회
+            applicant_image = db.query(UserImage).filter(
+                UserImage.user_id == app.applicant_id,
+                UserImage.is_primary == True
+            ).first()
+            
+            # JSON 파싱
+            answers_list = []
+            if app.answers:
+                try:
+                    raw_answers = json.loads(app.answers)
+                    answers_list = [RecruitAnswerItem(**a) for a in raw_answers]
+                except:
+                    answers_list = []
+            
+            applications_response.append(RecruitApplicationResponse(
+                application_id=app.application_id,
+                post_id=app.post_id,
+                applicant_id=app.applicant_id,
+                applicant_name=applicant.name if applicant else "Unknown",
+                applicant_profile_image=applicant_image.image_url if applicant_image else None,
+                answers=answers_list,
+                status=app.status,
+                is_read=app.is_read,
+                created_at=app.created_at,
+                updated_at=app.updated_at
+            ))
+        
+        return RecruitApplicationListResponse(
+            applications=applications_response,
+            total_count=len(applications_response)
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="지원서 목록 조회 중 오류가 발생했습니다."
+        )
+
+
+@app.put("/recruit/posts/{post_id}/applications/{application_id}", response_model=RecruitApplicationResponse)
+async def update_recruit_application_status(
+    post_id: int,
+    application_id: int,
+    status_data: RecruitApplicationStatusUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """구해요 지원서 상태 변경 (작성자 전용)"""
+    try:
+        post = db.query(RecruitPost).filter(
+            RecruitPost.post_id == post_id,
+            RecruitPost.is_deleted == False
+        ).first()
+        
+        if not post:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="게시글을 찾을 수 없습니다."
+            )
+        
+        if post.author_id != current_user.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="지원서 상태를 변경할 권한이 없습니다."
+            )
+        
+        application = db.query(RecruitApplication).filter(
+            RecruitApplication.application_id == application_id,
+            RecruitApplication.post_id == post_id
+        ).first()
+        
+        if not application:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="지원서를 찾을 수 없습니다."
+            )
+        
+        if status_data.status not in ['pending', 'accepted', 'rejected']:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="유효하지 않은 상태입니다."
+            )
+        
+        application.status = status_data.status
+        application.is_read = True
+        db.commit()
+        db.refresh(application)
+        
+        applicant = db.query(User).filter(User.user_id == application.applicant_id).first()
+        # 대표 프로필 이미지 조회
+        applicant_image = db.query(UserImage).filter(
+            UserImage.user_id == application.applicant_id,
+            UserImage.is_primary == True
+        ).first()
+        
+        # JSON 파싱
+        answers_list = []
+        if application.answers:
+            try:
+                raw_answers = json.loads(application.answers)
+                answers_list = [RecruitAnswerItem(**a) for a in raw_answers]
+            except:
+                answers_list = []
+        
+        return RecruitApplicationResponse(
+            application_id=application.application_id,
+            post_id=application.post_id,
+            applicant_id=application.applicant_id,
+            applicant_name=applicant.name if applicant else "Unknown",
+            applicant_profile_image=applicant_image.image_url if applicant_image else None,
+            answers=answers_list,
+            status=application.status,
+            is_read=application.is_read,
+            created_at=application.created_at,
+            updated_at=application.updated_at
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="지원서 상태 변경 중 오류가 발생했습니다."
+        )
+
+
+@app.delete("/recruit/posts/{post_id}/applications/me/", status_code=status.HTTP_200_OK)
+async def cancel_my_recruit_application(
+    post_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """내 지원 취소"""
+    try:
+        # 게시글 확인
+        post = db.query(RecruitPost).filter(
+            RecruitPost.post_id == post_id,
+            RecruitPost.is_deleted == False
+        ).first()
+        
+        if not post:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="게시글을 찾을 수 없습니다."
+            )
+        
+        # 내 지원서 찾기
+        application = db.query(RecruitApplication).filter(
+            RecruitApplication.post_id == post_id,
+            RecruitApplication.applicant_id == current_user.user_id
+        ).first()
+        
+        if not application:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="지원 내역을 찾을 수 없습니다."
+            )
+        
+        # 이미 수락/거절된 지원은 취소 불가
+        if application.status != 'pending':
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="이미 처리된 지원은 취소할 수 없습니다."
+            )
+        
+        # 지원 삭제
+        db.delete(application)
+        db.commit()
+        
+        return {"message": "지원이 취소되었습니다."}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="지원 취소 중 오류가 발생했습니다."
+        )
+
+
+@app.get("/users/me/recruit-applications/", response_model=MyRecruitApplicationListResponse)
+async def get_my_recruit_applications(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """내가 지원한 목록 조회"""
+    try:
+        applications = db.query(RecruitApplication).filter(
+            RecruitApplication.applicant_id == current_user.user_id
+        ).order_by(RecruitApplication.created_at.desc()).all()
+        
+        applications_response = []
+        for app in applications:
+            post = db.query(RecruitPost).filter(RecruitPost.post_id == app.post_id).first()
+            if not post:
+                continue
+            
+            post_author = db.query(User).filter(User.user_id == post.author_id).first()
+            
+            # JSON 파싱
+            answers_list = []
+            if app.answers:
+                try:
+                    raw_answers = json.loads(app.answers)
+                    answers_list = [RecruitAnswerItem(**a) for a in raw_answers]
+                except:
+                    answers_list = []
+            
+            applications_response.append(MyRecruitApplicationResponse(
+                application_id=app.application_id,
+                post_id=app.post_id,
+                post_title=post.title,
+                post_author_name=post_author.name if post_author else "Unknown",
+                answers=answers_list,
+                status=app.status,
+                created_at=app.created_at
+            ))
+        
+        return MyRecruitApplicationListResponse(
+            applications=applications_response,
+            total_count=len(applications_response)
+        )
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="지원 목록 조회 중 오류가 발생했습니다."
+        )
+
+
+# -----------------------------------------------------------------------------
+# 이미지 업로드
+# -----------------------------------------------------------------------------
+
+@app.post("/recruit/posts/images/", response_model=RecruitImageUploadResponse)
+async def upload_recruit_image(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user)
+):
+    """구해요 게시글 이미지 업로드"""
+    try:
+        # 이미지 저장 경로
+        import os
+        import uuid
+        
+        upload_dir = "static/images/recruit"
+        os.makedirs(upload_dir, exist_ok=True)
+        
+        # 파일 확장자 확인
+        ext = file.filename.split('.')[-1].lower()
+        if ext not in ['jpg', 'jpeg', 'png', 'gif', 'webp']:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="지원하지 않는 이미지 형식입니다."
+            )
+        
+        # 고유 파일명 생성
+        filename = f"{uuid.uuid4()}.{ext}"
+        filepath = os.path.join(upload_dir, filename)
+        
+        # 파일 저장
+        with open(filepath, "wb") as f:
+            content = await file.read()
+            f.write(content)
+        
+        image_url = f"/static/images/recruit/{filename}"
+        
+        return RecruitImageUploadResponse(image_url=image_url)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="이미지 업로드 중 오류가 발생했습니다."
+        )
+
+
+# =============================================================================
+# 장소 추천 (Place) API
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 장소 CRUD
+# -----------------------------------------------------------------------------
+
+@app.get("/places/", response_model=PlaceListResponse)
+async def get_places(
+    page: int = 1,
+    size: int = 20,
+    category: Optional[str] = None,
+    sort: str = "popular",  # popular, latest, likes, rating
+    q: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """장소 목록 조회"""
+    try:
+        query = db.query(Place).filter(Place.is_deleted == False)
+        
+        # 카테고리 필터
+        if category:
+            query = query.filter(Place.category == category)
+        
+        # 검색어 필터
+        if q:
+            search_term = f"%{q}%"
+            query = query.filter(
+                (Place.title.like(search_term)) |
+                (Place.address.like(search_term))
+            )
+        
+        # 정렬
+        if sort == "latest":
+            query = query.order_by(Place.created_at.desc())
+        elif sort == "likes":
+            query = query.order_by(Place.like_count.desc(), Place.created_at.desc())
+        elif sort == "rating":
+            query = query.order_by(Place.avg_rating.desc(), Place.created_at.desc())
+        else:  # popular
+            query = query.order_by(Place.view_count.desc(), Place.created_at.desc())
+        
+        total_count = query.count()
+        offset = (page - 1) * size
+        places = query.offset(offset).limit(size).all()
+        
+        places_response = []
+        for place in places:
+            author = db.query(User).filter(User.user_id == place.author_id).first()
+            
+            # 대표 이미지 (첫 번째 이미지)
+            first_image = db.query(PlaceImage).filter(
+                PlaceImage.place_id == place.place_id
+            ).order_by(PlaceImage.upload_order.asc()).first()
+            
+            is_liked = db.query(PlaceLike).filter(
+                PlaceLike.place_id == place.place_id,
+                PlaceLike.user_id == current_user.user_id
+            ).first() is not None
+            
+            places_response.append(PlaceListItemResponse(
+                place_id=place.place_id,
+                author_id=place.author_id,
+                author_name=author.name if author else "Unknown",
+                title=place.title,
+                address=place.address,
+                category=place.category,
+                image_url=first_image.image_url if first_image else None,
+                view_count=place.view_count,
+                like_count=place.like_count,
+                review_count=place.review_count,
+                avg_rating=place.avg_rating or 0.0,
+                is_liked=is_liked,
+                created_at=place.created_at
+            ))
+        
+        return PlaceListResponse(
+            places=places_response,
+            total_count=total_count,
+            page=page,
+            size=size
+        )
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="장소 목록 조회 중 오류가 발생했습니다."
+        )
+
+
+@app.get("/places/{place_id}", response_model=PlaceDetailResponse)
+async def get_place_detail(
+    place_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """장소 상세 조회"""
+    try:
+        place = db.query(Place).filter(
+            Place.place_id == place_id,
+            Place.is_deleted == False
+        ).first()
+        
+        if not place:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="장소를 찾을 수 없습니다."
+            )
+        
+        # 조회수 증가
+        place.view_count += 1
+        db.commit()
+        
+        author = db.query(User).filter(User.user_id == place.author_id).first()
+        
+        # 이미지 목록
+        images = db.query(PlaceImage).filter(
+            PlaceImage.place_id == place_id
+        ).order_by(PlaceImage.upload_order.asc()).all()
+        
+        images_response = [
+            PlaceImageResponse(
+                image_id=img.image_id,
+                image_url=img.image_url,
+                upload_order=img.upload_order
+            ) for img in images
+        ]
+        
+        is_liked = db.query(PlaceLike).filter(
+            PlaceLike.place_id == place_id,
+            PlaceLike.user_id == current_user.user_id
+        ).first() is not None
+        
+        return PlaceDetailResponse(
+            place_id=place.place_id,
+            author_id=place.author_id,
+            author_name=author.name if author else "Unknown",
+            title=place.title,
+            content=place.content,
+            address=place.address,
+            category=place.category,
+            images=images_response,
+            view_count=place.view_count,
+            like_count=place.like_count,
+            review_count=place.review_count,
+            avg_rating=place.avg_rating or 0.0,
+            is_liked=is_liked,
+            created_at=place.created_at,
+            updated_at=place.updated_at
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="장소 조회 중 오류가 발생했습니다."
+        )
+
+
+@app.post("/places/", response_model=PlaceDetailResponse, status_code=status.HTTP_201_CREATED)
+async def create_place(
+    place_data: PlaceCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """장소 등록"""
+    try:
+        new_place = Place(
+            author_id=current_user.user_id,
+            title=place_data.title,
+            content=place_data.content,
+            address=place_data.address,
+            category=place_data.category
+        )
+        
+        db.add(new_place)
+        db.commit()
+        db.refresh(new_place)
+        
+        return PlaceDetailResponse(
+            place_id=new_place.place_id,
+            author_id=new_place.author_id,
+            author_name=current_user.name,
+            title=new_place.title,
+            content=new_place.content,
+            address=new_place.address,
+            category=new_place.category,
+            images=[],
+            view_count=0,
+            like_count=0,
+            review_count=0,
+            avg_rating=0.0,
+            is_liked=False,
+            created_at=new_place.created_at,
+            updated_at=new_place.updated_at
+        )
+        
+    except Exception as e:
+        db.rollback()
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="장소 등록 중 오류가 발생했습니다."
+        )
+
+
+@app.put("/places/{place_id}", response_model=PlaceDetailResponse)
+async def update_place(
+    place_id: int,
+    place_data: PlaceUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """장소 수정"""
+    try:
+        place = db.query(Place).filter(
+            Place.place_id == place_id,
+            Place.is_deleted == False
+        ).first()
+        
+        if not place:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="장소를 찾을 수 없습니다."
+            )
+        
+        if place.author_id != current_user.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="장소 수정 권한이 없습니다."
+            )
+        
+        # 업데이트
+        if place_data.title is not None:
+            place.title = place_data.title
+        if place_data.content is not None:
+            place.content = place_data.content
+        if place_data.address is not None:
+            place.address = place_data.address
+        if place_data.category is not None:
+            place.category = place_data.category
+        
+        db.commit()
+        db.refresh(place)
+        
+        # 이미지 목록
+        images = db.query(PlaceImage).filter(
+            PlaceImage.place_id == place_id
+        ).order_by(PlaceImage.upload_order.asc()).all()
+        
+        images_response = [
+            PlaceImageResponse(
+                image_id=img.image_id,
+                image_url=img.image_url,
+                upload_order=img.upload_order
+            ) for img in images
+        ]
+        
+        is_liked = db.query(PlaceLike).filter(
+            PlaceLike.place_id == place_id,
+            PlaceLike.user_id == current_user.user_id
+        ).first() is not None
+        
+        return PlaceDetailResponse(
+            place_id=place.place_id,
+            author_id=place.author_id,
+            author_name=current_user.name,
+            title=place.title,
+            content=place.content,
+            address=place.address,
+            category=place.category,
+            images=images_response,
+            view_count=place.view_count,
+            like_count=place.like_count,
+            review_count=place.review_count,
+            avg_rating=place.avg_rating or 0.0,
+            is_liked=is_liked,
+            created_at=place.created_at,
+            updated_at=place.updated_at
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="장소 수정 중 오류가 발생했습니다."
+        )
+
+
+@app.delete("/places/{place_id}")
+async def delete_place(
+    place_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """장소 삭제"""
+    try:
+        place = db.query(Place).filter(
+            Place.place_id == place_id,
+            Place.is_deleted == False
+        ).first()
+        
+        if not place:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="장소를 찾을 수 없습니다."
+            )
+        
+        if place.author_id != current_user.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="장소 삭제 권한이 없습니다."
+            )
+        
+        place.is_deleted = True
+        db.commit()
+        
+        return {"message": "장소가 삭제되었습니다."}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="장소 삭제 중 오류가 발생했습니다."
+        )
+
+
+# -----------------------------------------------------------------------------
+# 장소 이미지
+# -----------------------------------------------------------------------------
+
+@app.post("/places/{place_id}/images", response_model=PlaceImageUploadResponse, status_code=status.HTTP_201_CREATED)
+async def upload_place_image(
+    place_id: int,
+    image: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """장소 이미지 업로드"""
+    try:
+        place = db.query(Place).filter(
+            Place.place_id == place_id,
+            Place.is_deleted == False
+        ).first()
+        
+        if not place:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="장소를 찾을 수 없습니다."
+            )
+        
+        if place.author_id != current_user.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="이미지 업로드 권한이 없습니다."
+            )
+        
+        # 이미지 저장 경로
+        import os
+        import uuid
+        
+        upload_dir = f"static/images/places"
+        os.makedirs(upload_dir, exist_ok=True)
+        
+        # 파일 확장자 확인
+        ext = image.filename.split('.')[-1].lower()
+        if ext not in ['jpg', 'jpeg', 'png', 'webp']:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="지원하지 않는 이미지 형식입니다."
+            )
+        
+        # 고유 파일명 생성
+        filename = f"{place_id}_{uuid.uuid4()}.{ext}"
+        filepath = os.path.join(upload_dir, filename)
+        
+        # 파일 저장
+        with open(filepath, "wb") as f:
+            content = await image.read()
+            f.write(content)
+        
+        image_url = f"/static/images/places/{filename}"
+        
+        # 현재 이미지 개수 확인
+        current_count = db.query(PlaceImage).filter(
+            PlaceImage.place_id == place_id
+        ).count()
+        
+        # DB에 저장
+        new_image = PlaceImage(
+            place_id=place_id,
+            image_url=image_url,
+            upload_order=current_count
+        )
+        db.add(new_image)
+        db.commit()
+        db.refresh(new_image)
+        
+        return PlaceImageUploadResponse(
+            image_id=new_image.image_id,
+            image_url=new_image.image_url,
+            upload_order=new_image.upload_order
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="이미지 업로드 중 오류가 발생했습니다."
+        )
+
+
+@app.delete("/places/{place_id}/images/{image_id}")
+async def delete_place_image(
+    place_id: int,
+    image_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """장소 이미지 삭제"""
+    try:
+        place = db.query(Place).filter(
+            Place.place_id == place_id,
+            Place.is_deleted == False
+        ).first()
+        
+        if not place:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="장소를 찾을 수 없습니다."
+            )
+        
+        if place.author_id != current_user.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="이미지 삭제 권한이 없습니다."
+            )
+        
+        image = db.query(PlaceImage).filter(
+            PlaceImage.image_id == image_id,
+            PlaceImage.place_id == place_id
+        ).first()
+        
+        if not image:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="이미지를 찾을 수 없습니다."
+            )
+        
+        # 실제 파일 삭제
+        import os
+        if image.image_url.startswith('/'):
+            file_path = image.image_url[1:]  # 앞의 '/' 제거
+            if os.path.exists(file_path):
+                os.remove(file_path)
+        
+        db.delete(image)
+        db.commit()
+        
+        return {"message": "이미지가 삭제되었습니다."}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="이미지 삭제 중 오류가 발생했습니다."
+        )
+
+
+# -----------------------------------------------------------------------------
+# 장소 좋아요
+# -----------------------------------------------------------------------------
+
+@app.post("/places/{place_id}/like", response_model=PlaceLikeResponse)
+async def toggle_place_like(
+    place_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """장소 좋아요 토글"""
+    try:
+        place = db.query(Place).filter(
+            Place.place_id == place_id,
+            Place.is_deleted == False
+        ).first()
+        
+        if not place:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="장소를 찾을 수 없습니다."
+            )
+        
+        existing_like = db.query(PlaceLike).filter(
+            PlaceLike.place_id == place_id,
+            PlaceLike.user_id == current_user.user_id
+        ).first()
+        
+        if existing_like:
+            db.delete(existing_like)
+            place.like_count = max(0, place.like_count - 1)
+            is_liked = False
+        else:
+            new_like = PlaceLike(
+                place_id=place_id,
+                user_id=current_user.user_id
+            )
+            db.add(new_like)
+            place.like_count += 1
+            is_liked = True
+        
+        db.commit()
+        
+        return PlaceLikeResponse(
+            place_id=place_id,
+            is_liked=is_liked,
+            like_count=place.like_count
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="좋아요 처리 중 오류가 발생했습니다."
+        )
+
+
+# -----------------------------------------------------------------------------
+# 리뷰 CRUD
+# -----------------------------------------------------------------------------
+
+@app.get("/places/{place_id}/reviews", response_model=PlaceReviewListResponse)
+async def get_place_reviews(
+    place_id: int,
+    page: int = 1,
+    size: int = 20,
+    sort: str = "latest",  # latest, rating_high, rating_low
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """리뷰 목록 조회"""
+    try:
+        place = db.query(Place).filter(
+            Place.place_id == place_id,
+            Place.is_deleted == False
+        ).first()
+        
+        if not place:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="장소를 찾을 수 없습니다."
+            )
+        
+        query = db.query(PlaceReview).filter(
+            PlaceReview.place_id == place_id,
+            PlaceReview.is_deleted == False
+        )
+        
+        # 정렬
+        if sort == "rating_high":
+            query = query.order_by(PlaceReview.rating.desc(), PlaceReview.created_at.desc())
+        elif sort == "rating_low":
+            query = query.order_by(PlaceReview.rating.asc(), PlaceReview.created_at.desc())
+        else:  # latest
+            query = query.order_by(PlaceReview.created_at.desc())
+        
+        total_count = query.count()
+        offset = (page - 1) * size
+        reviews = query.offset(offset).limit(size).all()
+        
+        # 별점 분포 계산
+        rating_dist = {"5": 0, "4": 0, "3": 0, "2": 0, "1": 0}
+        all_reviews = db.query(PlaceReview).filter(
+            PlaceReview.place_id == place_id,
+            PlaceReview.is_deleted == False
+        ).all()
+        
+        for r in all_reviews:
+            rating_dist[str(r.rating)] += 1
+        
+        reviews_response = []
+        for review in reviews:
+            author = db.query(User).filter(User.user_id == review.author_id).first()
+            # 대표 프로필 이미지 조회
+            author_image = db.query(UserImage).filter(
+                UserImage.user_id == review.author_id,
+                UserImage.is_primary == True
+            ).first()
+            
+            reviews_response.append(PlaceReviewResponse(
+                review_id=review.review_id,
+                place_id=review.place_id,
+                author_id=review.author_id,
+                author_name=author.name if author else "Unknown",
+                author_profile_image=author_image.image_url if author_image else None,
+                rating=review.rating,
+                content=review.content,
+                visit_date=review.visit_date,
+                created_at=review.created_at,
+                updated_at=review.updated_at
+            ))
+        
+        return PlaceReviewListResponse(
+            reviews=reviews_response,
+            total_count=total_count,
+            avg_rating=place.avg_rating or 0.0,
+            rating_distribution=rating_dist,
+            page=page,
+            size=size
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="리뷰 목록 조회 중 오류가 발생했습니다."
+        )
+
+
+@app.post("/places/{place_id}/reviews", response_model=PlaceReviewResponse, status_code=status.HTTP_201_CREATED)
+async def create_place_review(
+    place_id: int,
+    review_data: PlaceReviewCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """리뷰 작성"""
+    try:
+        place = db.query(Place).filter(
+            Place.place_id == place_id,
+            Place.is_deleted == False
+        ).first()
+        
+        if not place:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="장소를 찾을 수 없습니다."
+            )
+        
+        # 본인 장소에는 리뷰 불가
+        if place.author_id == current_user.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="본인이 등록한 장소에는 리뷰를 작성할 수 없습니다."
+            )
+        
+        new_review = PlaceReview(
+            place_id=place_id,
+            author_id=current_user.user_id,
+            rating=review_data.rating,
+            content=review_data.content,
+            visit_date=review_data.visit_date
+        )
+        
+        db.add(new_review)
+        
+        # 리뷰 수 증가 및 평균 별점 재계산
+        place.review_count += 1
+        
+        # 평균 별점 계산
+        all_ratings = db.query(PlaceReview.rating).filter(
+            PlaceReview.place_id == place_id,
+            PlaceReview.is_deleted == False
+        ).all()
+        ratings_list = [r[0] for r in all_ratings] + [review_data.rating]
+        place.avg_rating = sum(ratings_list) / len(ratings_list)
+        
+        db.commit()
+        db.refresh(new_review)
+        
+        # 대표 프로필 이미지 조회
+        author_image = db.query(UserImage).filter(
+            UserImage.user_id == current_user.user_id,
+            UserImage.is_primary == True
+        ).first()
+        
+        return PlaceReviewResponse(
+            review_id=new_review.review_id,
+            place_id=new_review.place_id,
+            author_id=new_review.author_id,
+            author_name=current_user.name,
+            author_profile_image=author_image.image_url if author_image else None,
+            rating=new_review.rating,
+            content=new_review.content,
+            visit_date=new_review.visit_date,
+            created_at=new_review.created_at,
+            updated_at=new_review.updated_at
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="리뷰 작성 중 오류가 발생했습니다."
+        )
+
+
+@app.put("/places/{place_id}/reviews/{review_id}", response_model=PlaceReviewResponse)
+async def update_place_review(
+    place_id: int,
+    review_id: int,
+    review_data: PlaceReviewUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """리뷰 수정"""
+    try:
+        review = db.query(PlaceReview).filter(
+            PlaceReview.review_id == review_id,
+            PlaceReview.place_id == place_id,
+            PlaceReview.is_deleted == False
+        ).first()
+        
+        if not review:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="리뷰를 찾을 수 없습니다."
+            )
+        
+        if review.author_id != current_user.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="리뷰 수정 권한이 없습니다."
+            )
+        
+        old_rating = review.rating
+        
+        # 업데이트
+        if review_data.rating is not None:
+            review.rating = review_data.rating
+        if review_data.content is not None:
+            review.content = review_data.content
+        if review_data.visit_date is not None:
+            review.visit_date = review_data.visit_date
+        
+        # 별점이 변경된 경우 평균 재계산
+        if review_data.rating is not None and review_data.rating != old_rating:
+            place = db.query(Place).filter(Place.place_id == place_id).first()
+            if place:
+                all_ratings = db.query(PlaceReview.rating).filter(
+                    PlaceReview.place_id == place_id,
+                    PlaceReview.is_deleted == False,
+                    PlaceReview.review_id != review_id
+                ).all()
+                ratings_list = [r[0] for r in all_ratings] + [review.rating]
+                place.avg_rating = sum(ratings_list) / len(ratings_list)
+        
+        db.commit()
+        db.refresh(review)
+        
+        # 대표 프로필 이미지 조회
+        author_image = db.query(UserImage).filter(
+            UserImage.user_id == current_user.user_id,
+            UserImage.is_primary == True
+        ).first()
+        
+        return PlaceReviewResponse(
+            review_id=review.review_id,
+            place_id=review.place_id,
+            author_id=review.author_id,
+            author_name=current_user.name,
+            author_profile_image=author_image.image_url if author_image else None,
+            rating=review.rating,
+            content=review.content,
+            visit_date=review.visit_date,
+            created_at=review.created_at,
+            updated_at=review.updated_at
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="리뷰 수정 중 오류가 발생했습니다."
+        )
+
+
+@app.delete("/places/{place_id}/reviews/{review_id}")
+async def delete_place_review(
+    place_id: int,
+    review_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """리뷰 삭제"""
+    try:
+        review = db.query(PlaceReview).filter(
+            PlaceReview.review_id == review_id,
+            PlaceReview.place_id == place_id,
+            PlaceReview.is_deleted == False
+        ).first()
+        
+        if not review:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="리뷰를 찾을 수 없습니다."
+            )
+        
+        if review.author_id != current_user.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="리뷰 삭제 권한이 없습니다."
+            )
+        
+        review.is_deleted = True
+        
+        # 리뷰 수 감소 및 평균 별점 재계산
+        place = db.query(Place).filter(Place.place_id == place_id).first()
+        if place:
+            place.review_count = max(0, place.review_count - 1)
+            
+            # 평균 별점 재계산
+            remaining_ratings = db.query(PlaceReview.rating).filter(
+                PlaceReview.place_id == place_id,
+                PlaceReview.is_deleted == False,
+                PlaceReview.review_id != review_id
+            ).all()
+            
+            if remaining_ratings:
+                ratings_list = [r[0] for r in remaining_ratings]
+                place.avg_rating = sum(ratings_list) / len(ratings_list)
+            else:
+                place.avg_rating = 0.0
+        
+        db.commit()
+        
+        return {"message": "리뷰가 삭제되었습니다."}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="리뷰 삭제 중 오류가 발생했습니다."
+        )
+
+
+# -----------------------------------------------------------------------------
+# 내 장소/리뷰 목록
+# -----------------------------------------------------------------------------
+
+@app.get("/users/me/places", response_model=PlaceListResponse)
+async def get_my_places(
+    page: int = 1,
+    size: int = 20,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """내가 등록한 장소 목록"""
+    try:
+        query = db.query(Place).filter(
+            Place.author_id == current_user.user_id,
+            Place.is_deleted == False
+        )
+        
+        total_count = query.count()
+        offset = (page - 1) * size
+        places = query.order_by(Place.created_at.desc()).offset(offset).limit(size).all()
+        
+        places_response = []
+        for place in places:
+            # 대표 이미지
+            first_image = db.query(PlaceImage).filter(
+                PlaceImage.place_id == place.place_id
+            ).order_by(PlaceImage.upload_order.asc()).first()
+            
+            places_response.append(PlaceListItemResponse(
+                place_id=place.place_id,
+                author_id=place.author_id,
+                author_name=current_user.name,
+                title=place.title,
+                address=place.address,
+                category=place.category,
+                image_url=first_image.image_url if first_image else None,
+                view_count=place.view_count,
+                like_count=place.like_count,
+                review_count=place.review_count,
+                avg_rating=place.avg_rating or 0.0,
+                is_liked=False,  # 자기 장소이므로
+                created_at=place.created_at
+            ))
+        
+        return PlaceListResponse(
+            places=places_response,
+            total_count=total_count,
+            page=page,
+            size=size
+        )
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="장소 목록 조회 중 오류가 발생했습니다."
+        )
+
+
+@app.get("/users/me/liked-places", response_model=PlaceListResponse)
+async def get_my_liked_places(
+    page: int = 1,
+    size: int = 20,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """내가 좋아요한 장소 목록"""
+    try:
+        # 좋아요한 장소 ID 목록
+        liked_place_ids = db.query(PlaceLike.place_id).filter(
+            PlaceLike.user_id == current_user.user_id
+        ).all()
+        liked_ids = [p[0] for p in liked_place_ids]
+        
+        query = db.query(Place).filter(
+            Place.place_id.in_(liked_ids),
+            Place.is_deleted == False
+        )
+        
+        total_count = query.count()
+        offset = (page - 1) * size
+        places = query.order_by(Place.created_at.desc()).offset(offset).limit(size).all()
+        
+        places_response = []
+        for place in places:
+            author = db.query(User).filter(User.user_id == place.author_id).first()
+            
+            # 대표 이미지
+            first_image = db.query(PlaceImage).filter(
+                PlaceImage.place_id == place.place_id
+            ).order_by(PlaceImage.upload_order.asc()).first()
+            
+            places_response.append(PlaceListItemResponse(
+                place_id=place.place_id,
+                author_id=place.author_id,
+                author_name=author.name if author else "Unknown",
+                title=place.title,
+                address=place.address,
+                category=place.category,
+                image_url=first_image.image_url if first_image else None,
+                view_count=place.view_count,
+                like_count=place.like_count,
+                review_count=place.review_count,
+                avg_rating=place.avg_rating or 0.0,
+                is_liked=True,
+                created_at=place.created_at
+            ))
+        
+        return PlaceListResponse(
+            places=places_response,
+            total_count=total_count,
+            page=page,
+            size=size
+        )
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="장소 목록 조회 중 오류가 발생했습니다."
+        )
+
+
+@app.get("/users/me/place-reviews", response_model=MyPlaceReviewListResponse)
+async def get_my_place_reviews(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """내가 작성한 리뷰 목록"""
+    try:
+        reviews = db.query(PlaceReview).filter(
+            PlaceReview.author_id == current_user.user_id,
+            PlaceReview.is_deleted == False
+        ).order_by(PlaceReview.created_at.desc()).all()
+        
+        reviews_response = []
+        for review in reviews:
+            place = db.query(Place).filter(Place.place_id == review.place_id).first()
+            
+            reviews_response.append(MyPlaceReviewResponse(
+                review_id=review.review_id,
+                place_id=review.place_id,
+                place_title=place.title if place else "삭제된 장소",
+                rating=review.rating,
+                content=review.content,
+                visit_date=review.visit_date,
+                created_at=review.created_at
+            ))
+        
+        return MyPlaceReviewListResponse(
+            reviews=reviews_response,
+            total_count=len(reviews_response)
+        )
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="리뷰 목록 조회 중 오류가 발생했습니다."
         )

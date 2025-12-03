@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator, ConfigDict
 from datetime import date, datetime, time
 from typing import Optional, List
 from enum import Enum
@@ -154,13 +154,13 @@ class UserCreateWithVerification(UserCreate):
 
 # 시간표 관련 Enums
 class DayOfWeekEnum(str, Enum):
-    MONDAY = "월"
-    TUESDAY = "화"
-    WEDNESDAY = "수"
-    THURSDAY = "목"
-    FRIDAY = "금"
-    SATURDAY = "토"
-    SUNDAY = "일"
+    MONDAY = "Monday"
+    TUESDAY = "Tuesday"
+    WEDNESDAY = "Wednesday"
+    THURSDAY = "Thursday"
+    FRIDAY = "Friday"
+    SATURDAY = "Saturday"
+    SUNDAY = "Sunday"
 
 # 과목 관련 스키마
 class SubjectBase(BaseModel):
@@ -269,6 +269,10 @@ class ChatRoomResponse(ChatRoomBase):
     participant_count: int = Field(0, description="참여자 수")
     last_message: Optional[str] = Field(None, description="마지막 메시지")
     unread_count: int = Field(0, description="읽지 않은 메시지 수")
+    # 1:1 채팅일 때 상대방 정보
+    other_user_id: Optional[int] = Field(None, description="상대방 ID (1:1 채팅만)")
+    other_user_name: Optional[str] = Field(None, description="상대방 이름 (1:1 채팅만)")
+    other_user_profile_image: Optional[str] = Field(None, description="상대방 프로필 이미지 (1:1 채팅만)")
     
     model_config = {"from_attributes": True}
 
@@ -665,12 +669,39 @@ class NotificationStatsResponse(BaseModel):
 # 그룹/워크스페이스 관련 스키마
 # =============================================================================
 
+class GroupCategoryEnum(str, Enum):
+    """그룹 카테고리 목록"""
+    EXERCISE = "운동"
+    STUDY = "스터디"
+    FOOD = "맛집탐방"
+    GAME = "게임"
+    SOCIAL = "친목"
+    CULTURE = "문화"
+    ETC = "기타"
+
 class GroupBase(BaseModel):
     group_name: str = Field(..., min_length=1, max_length=100, description="그룹 이름")
     description: Optional[str] = Field(None, max_length=500, description="그룹 설명")
     is_public: bool = Field(True, description="공개 여부")
     requires_approval: bool = Field(False, description="가입 승인 필요 여부")
     max_members: Optional[int] = Field(None, ge=1, description="최대 멤버 수")
+    
+    # Phase 1 추가 필드
+    category: Optional[str] = Field(None, description="카테고리 (운동, 스터디, 맛집탐방, 게임, 친목, 문화, 기타)")
+    tags: Optional[List[str]] = Field(default_factory=list, description="태그 목록 (예: ['#독서', '#자기계발'])")
+    primary_image_url: Optional[str] = Field(None, description="대표 이미지 URL")
+    
+    # 정규 모임 정보
+    is_regular: bool = Field(False, description="정규 모임 여부")
+    regular_weekday: Optional[List[int]] = Field(None, description="정규 모임 요일 리스트 (1=월요일, 7=일요일)")
+    regular_time: Optional[time] = Field(None, description="정규 모임 시간")
+    regular_location: Optional[str] = Field(None, max_length=200, description="정규 모임 장소")
+    
+    # 모임 규칙
+    rules: Optional[List[str]] = Field(default_factory=list, description="모임 규칙 목록")
+    
+    # 활동계획
+    activity_plan: Optional[List[str]] = Field(default_factory=list, description="활동계획 목록")
 
 class GroupCreate(GroupBase):
     pass
@@ -681,6 +712,17 @@ class GroupUpdate(BaseModel):
     is_public: Optional[bool] = None
     requires_approval: Optional[bool] = None
     max_members: Optional[int] = Field(None, ge=1)
+    
+    # Phase 1 추가 필드
+    category: Optional[str] = None
+    tags: Optional[List[str]] = None
+    primary_image_url: Optional[str] = None
+    is_regular: Optional[bool] = None
+    regular_weekday: Optional[List[int]] = None
+    regular_time: Optional[time] = None
+    regular_location: Optional[str] = Field(None, max_length=200)
+    rules: Optional[List[str]] = None
+    activity_plan: Optional[List[str]] = None
 
 class GroupResponse(GroupBase):
     group_id: int
@@ -688,6 +730,14 @@ class GroupResponse(GroupBase):
     creator_name: str = Field(..., description="생성자 이름")
     is_active: bool
     member_count: int = Field(0, description="멤버 수")
+    
+    # Phase 1 추가 필드
+    like_count: int = Field(0, description="좋아요 수")
+    is_liked: bool = Field(False, description="현재 사용자가 좋아요 했는지")
+    view_count: int = Field(0, description="조회수")
+    pending_requests: int = Field(0, description="가입 신청 대기 수")
+    regular_weekday_display: Optional[str] = Field(None, description="정규 모임 요일 표시 (예: '화,일')")
+    
     created_at: datetime
     updated_at: datetime
     
@@ -696,6 +746,52 @@ class GroupResponse(GroupBase):
 class GroupListResponse(BaseModel):
     groups: List[GroupResponse] = Field([], description="그룹 목록")
     total_count: int = Field(0, description="전체 그룹 수")
+
+class GroupLikeResponse(BaseModel):
+    """그룹 좋아요 응답"""
+    group_id: int
+    like_count: int = Field(0, description="좋아요 수")
+    is_liked: bool = Field(False, description="현재 사용자가 좋아요 했는지")
+
+class GroupCategoryListResponse(BaseModel):
+    """카테고리 목록 응답"""
+    categories: List[str] = Field([], description="카테고리 목록")
+
+# =============================================================================
+# 모임 통계 Schemas
+# =============================================================================
+
+class GroupStatsResponse(BaseModel):
+    """모임 통계 응답"""
+    group_id: int
+    total_members: int = Field(0, description="총 멤버 수")
+    active_members_week: int = Field(0, description="주간 활성 멤버 수")
+    new_members_week: int = Field(0, description="주간 신규 멤버 수")
+    total_posts: int = Field(0, description="총 게시글 수")
+    total_comments: int = Field(0, description="총 댓글 수")
+    total_meetings: int = Field(0, description="총 모임 수")
+    total_likes: int = Field(0, description="총 좋아요 수")
+    view_count: int = Field(0, description="조회수")
+    
+class MemberGrowthData(BaseModel):
+    """멤버 성장 데이터"""
+    month: str = Field(..., description="월 (YYYY-MM)")
+    member_count: int = Field(0, description="멤버 수")
+    
+class MemberGrowthResponse(BaseModel):
+    """멤버 성장 현황 응답"""
+    group_id: int
+    data: List[MemberGrowthData] = Field([], description="월별 멤버 수")
+    
+class PostCategoryStats(BaseModel):
+    """카테고리별 게시글 통계"""
+    category: str = Field(..., description="카테고리")
+    count: int = Field(0, description="게시글 수")
+    
+class PostCategoryStatsResponse(BaseModel):
+    """카테고리별 게시글 통계 응답"""
+    group_id: int
+    stats: List[PostCategoryStats] = Field([], description="카테고리별 통계")
 
 class GroupMemberResponse(BaseModel):
     member_id: int
@@ -719,6 +815,7 @@ class GroupMemberRoleUpdate(BaseModel):
 class GroupPostBase(BaseModel):
     title: str = Field(..., min_length=1, max_length=200, description="제목")
     content: str = Field(..., min_length=1, max_length=5000, description="내용")
+    category: Optional[str] = Field("일반", description="카테고리 (공지/일반/질문/후기)")
 
 class GroupPostCreate(GroupPostBase):
     pass
@@ -726,6 +823,7 @@ class GroupPostCreate(GroupPostBase):
 class GroupPostUpdate(BaseModel):
     title: Optional[str] = Field(None, min_length=1, max_length=200)
     content: Optional[str] = Field(None, min_length=1, max_length=5000)
+    category: Optional[str] = None
 
 class GroupPostResponse(GroupPostBase):
     post_id: int
@@ -733,6 +831,8 @@ class GroupPostResponse(GroupPostBase):
     author_id: int
     author_name: str = Field(..., description="작성자 이름")
     is_pinned: bool
+    like_count: int = Field(0, description="좋아요 수")
+    is_liked: bool = Field(False, description="현재 사용자가 좋아요 했는지")
     created_at: datetime
     updated_at: datetime
     comment_count: int = Field(0, description="댓글 수")
@@ -758,6 +858,8 @@ class GroupPostCommentResponse(GroupPostCommentBase):
     post_id: int
     author_id: int
     author_name: str = Field(..., description="작성자 이름")
+    like_count: int = Field(0, description="좋아요 수")
+    is_liked: bool = Field(False, description="현재 사용자가 좋아요 했는지")
     created_at: datetime
     updated_at: datetime
     
@@ -819,7 +921,7 @@ class GroupMeetingListResponse(BaseModel):
     total_count: int = Field(0, description="전체 모임 수")
 
 class GroupMeetingAttendRequest(BaseModel):
-    status: str = Field(..., description="참석 상태 (pending, attending, not_attending)")
+    status: str = Field(..., description="참석 상태 (attending, not_attending, maybe)")
 
 # =============================================================================
 # 매칭 시스템 관련 스키마
@@ -940,3 +1042,439 @@ class UserNotificationSettingsUpdate(BaseModel):
     match_notifications: Optional[bool] = None
     system_notifications: Optional[bool] = None
     reminder_notifications: Optional[bool] = None
+
+# =============================================================================
+# 그룹 이벤트 관련 스키마
+# =============================================================================
+
+class GroupEventBase(BaseModel):
+    title: str = Field(..., min_length=1, max_length=200, description="이벤트 제목")
+    description: Optional[str] = Field(None, description="이벤트 설명")
+    event_date: date = Field(..., description="이벤트 날짜")
+    event_time: Optional[time] = Field(None, description="이벤트 시간")
+    location: Optional[str] = Field(None, max_length=200, description="장소")
+    max_attendees: Optional[int] = Field(None, ge=1, description="최대 참석자 수")
+    is_mandatory: bool = Field(False, description="필수 참석 여부")
+
+class GroupEventCreate(GroupEventBase):
+    pass
+
+class GroupEventUpdate(BaseModel):
+    title: Optional[str] = Field(None, min_length=1, max_length=200)
+    description: Optional[str] = None
+    event_date: Optional[date] = None
+    event_time: Optional[time] = None
+    location: Optional[str] = Field(None, max_length=200)
+    max_attendees: Optional[int] = Field(None, ge=1)
+    is_mandatory: Optional[bool] = None
+
+class GroupEventResponse(GroupEventBase):
+    event_id: int
+    group_id: int
+    created_by: int
+    creator_name: str = Field(..., description="생성자 이름")
+    attendee_count: int = Field(0, description="참석자 수")
+    my_attendance: Optional[str] = Field(None, description="내 참석 상태 (attending/not_attending/maybe)")
+    created_at: datetime
+    updated_at: datetime
+    
+    model_config = {"from_attributes": True}
+
+class GroupEventListResponse(BaseModel):
+    events: List[GroupEventResponse] = Field([], description="이벤트 목록")
+    total_count: int = Field(0, description="전체 이벤트 수")
+
+class GroupEventAttendanceCreate(BaseModel):
+    status: str = Field(..., description="참석 상태 (attending/not_attending/maybe)")
+
+class GroupEventAttendanceResponse(BaseModel):
+    message: str
+    attendee_count: int
+    my_attendance: str
+
+# =============================================================================
+# 갤러리 좋아요/댓글 관련 스키마
+# =============================================================================
+
+class GalleryImageLikeResponse(BaseModel):
+    image_id: int
+    like_count: int = Field(0, description="좋아요 수")
+    is_liked: bool = Field(False, description="현재 사용자가 좋아요 했는지")
+
+class GalleryImageCommentCreate(BaseModel):
+    content: str = Field(..., min_length=1, max_length=1000, description="댓글 내용")
+
+class GalleryImageCommentUpdate(BaseModel):
+    content: str = Field(..., min_length=1, max_length=1000, description="댓글 내용")
+
+class GalleryImageCommentResponse(BaseModel):
+    comment_id: int
+    image_id: int
+    user_id: int
+    user_name: str = Field(..., description="작성자 이름")
+    content: str
+    is_deleted: bool
+    created_at: datetime
+    updated_at: datetime
+    
+    model_config = {"from_attributes": True}
+
+class GalleryImageCommentListResponse(BaseModel):
+    comments: List[GalleryImageCommentResponse] = Field([], description="댓글 목록")
+    total_count: int = Field(0, description="전체 댓글 수")
+
+# =============================================================================
+# 게시글 좋아요 관련 스키마
+# =============================================================================
+
+class GroupPostLikeResponse(BaseModel):
+    post_id: int
+    like_count: int = Field(0, description="좋아요 수")
+    is_liked: bool = Field(False, description="현재 사용자가 좋아요 했는지")
+
+# =============================================================================
+# 게시글 이미지 관련 스키마
+# =============================================================================
+
+class GroupPostImageResponse(BaseModel):
+    image_id: int
+    post_id: int
+    image_url: str
+    created_at: datetime
+    
+    model_config = {"from_attributes": True}
+
+# =============================================================================
+# 댓글 좋아요 관련 스키마
+# =============================================================================
+
+class GroupPostCommentLikeResponse(BaseModel):
+    comment_id: int
+    like_count: int = Field(0, description="좋아요 수")
+    is_liked: bool = Field(False, description="현재 사용자가 좋아요 했는지")
+
+# =============================================================================
+# 게시글 검색 관련 스키마
+# =============================================================================
+
+class GroupPostSearchResponse(BaseModel):
+    posts: List[GroupPostResponse]
+    total_count: int
+    page: int
+    size: int
+
+
+# =============================================================================
+# 구해요 (구인구직) 관련 스키마
+# =============================================================================
+
+class RecruitCategoryEnum(str, Enum):
+    ALL = "전체"
+    STUDY = "스터디"
+    TALENT = "재능공유"
+    RENTAL = "물품대여"
+    EXERCISE = "운동메이트"
+
+class RecruitApplicationStatusEnum(str, Enum):
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+
+# 지원서 답변 스키마
+class RecruitAnswerItem(BaseModel):
+    question: str = Field(..., description="질문")
+    answer: str = Field(..., description="답변")
+
+# 게시글 생성
+class RecruitPostCreate(BaseModel):
+    title: str = Field(..., min_length=1, max_length=200, description="제목")
+    content: str = Field(..., min_length=1, description="내용")
+    image_url: Optional[str] = Field(None, description="대표 이미지 URL")
+    category: str = Field("전체", description="카테고리")
+    tags: Optional[List[str]] = Field(default_factory=list, description="태그 목록")
+    headcount: int = Field(1, ge=1, description="모집 인원")
+    deadline_at: Optional[datetime] = Field(None, description="마감일시")
+    questions: Optional[List[str]] = Field(default_factory=list, description="지원서 질문 목록")
+
+# 게시글 수정
+class RecruitPostUpdate(BaseModel):
+    title: Optional[str] = Field(None, min_length=1, max_length=200)
+    content: Optional[str] = Field(None, min_length=1)
+    image_url: Optional[str] = None
+    category: Optional[str] = None
+    tags: Optional[List[str]] = None
+    headcount: Optional[int] = Field(None, ge=1)
+    deadline_at: Optional[datetime] = None
+    questions: Optional[List[str]] = None
+    is_closed: Optional[bool] = None
+
+# 게시글 응답
+class RecruitPostResponse(BaseModel):
+    post_id: int
+    author_id: int
+    author_name: str = Field(..., description="작성자 이름")
+    author_profile_image: Optional[str] = Field(None, description="작성자 프로필 이미지")
+    title: str
+    content: str
+    image_url: Optional[str] = None
+    category: str
+    tags: List[str] = Field(default_factory=list)
+    headcount: int = 1
+    deadline_at: Optional[datetime] = None
+    questions: List[str] = Field(default_factory=list)
+    view_count: int = 0
+    like_count: int = 0
+    comment_count: int = 0
+    is_liked: bool = Field(False, description="현재 사용자가 좋아요 했는지")
+    is_urgent: bool = Field(False, description="마감임박 여부 (24시간 이내)")
+    is_closed: bool = Field(False, description="모집 마감 여부")
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+# 게시글 목록 응답
+class RecruitPostListResponse(BaseModel):
+    posts: List[RecruitPostResponse]
+    total_count: int
+    page: int
+    size: int
+
+# 좋아요 응답
+class RecruitPostLikeResponse(BaseModel):
+    post_id: int
+    like_count: int
+    is_liked: bool
+
+# 댓글 생성
+class RecruitCommentCreate(BaseModel):
+    content: str = Field(..., min_length=1, description="댓글 내용")
+    parent_comment_id: Optional[int] = Field(None, description="대댓글인 경우 부모 댓글 ID")
+
+# 댓글 수정
+class RecruitCommentUpdate(BaseModel):
+    content: str = Field(..., min_length=1, description="댓글 내용")
+
+# 댓글 응답
+class RecruitCommentResponse(BaseModel):
+    comment_id: int
+    post_id: int
+    author_id: int
+    author_name: str
+    author_profile_image: Optional[str] = None
+    content: str
+    parent_comment_id: Optional[int] = None
+    is_deleted: bool = False
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    replies: List["RecruitCommentResponse"] = Field(default_factory=list)
+
+    model_config = ConfigDict(from_attributes=True)
+
+# 댓글 목록 응답
+class RecruitCommentListResponse(BaseModel):
+    comments: List[RecruitCommentResponse]
+    total_count: int
+
+# 지원서 제출
+class RecruitApplicationCreate(BaseModel):
+    answers: List[RecruitAnswerItem] = Field(..., description="답변 목록")
+
+# 지원서 상태 변경
+class RecruitApplicationStatusUpdate(BaseModel):
+    status: str = Field(..., description="상태 (pending, accepted, rejected)")
+
+# 지원서 응답
+class RecruitApplicationResponse(BaseModel):
+    application_id: int
+    post_id: int
+    applicant_id: int
+    applicant_name: str
+    applicant_profile_image: Optional[str] = None
+    answers: List[RecruitAnswerItem]
+    status: str = "pending"
+    is_read: bool = False
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+# 지원서 목록 응답
+class RecruitApplicationListResponse(BaseModel):
+    applications: List[RecruitApplicationResponse]
+    total_count: int
+
+# 내가 지원한 목록 응답 (게시글 정보 포함)
+class MyRecruitApplicationResponse(BaseModel):
+    application_id: int
+    post_id: int
+    post_title: str
+    post_author_name: str
+    answers: List[RecruitAnswerItem]
+    status: str
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+class MyRecruitApplicationListResponse(BaseModel):
+    applications: List[MyRecruitApplicationResponse]
+    total_count: int
+
+# 이미지 업로드 응답
+class RecruitImageUploadResponse(BaseModel):
+    image_url: str
+
+
+# =============================================================================
+# 장소 추천 (Place) 관련 스키마
+# =============================================================================
+
+class PlaceCategoryEnum(str, Enum):
+    CAFE = "카페"
+    STUDY_ROOM = "스터디룸"
+    GYM = "운동시설"
+    LIBRARY = "도서관"
+    PARK = "공원"
+    LOUNGE = "라운지"
+    ETC = "기타"
+
+# 장소 이미지 응답
+class PlaceImageResponse(BaseModel):
+    image_id: int
+    image_url: str
+    upload_order: int = 0
+
+    model_config = ConfigDict(from_attributes=True)
+
+# 장소 생성
+class PlaceCreate(BaseModel):
+    title: str = Field(..., min_length=1, max_length=200, description="장소 이름")
+    content: Optional[str] = Field(None, description="장소 설명/소개")
+    address: Optional[str] = Field(None, max_length=500, description="주소")
+    category: str = Field("기타", description="카테고리")
+
+# 장소 수정
+class PlaceUpdate(BaseModel):
+    title: Optional[str] = Field(None, min_length=1, max_length=200)
+    content: Optional[str] = None
+    address: Optional[str] = Field(None, max_length=500)
+    category: Optional[str] = None
+
+# 장소 목록 응답 (간단)
+class PlaceListItemResponse(BaseModel):
+    place_id: int
+    author_id: int
+    author_name: str
+    title: str
+    address: Optional[str] = None
+    category: str
+    image_url: Optional[str] = None  # 대표 이미지
+    view_count: int = 0
+    like_count: int = 0
+    review_count: int = 0
+    avg_rating: float = 0.0
+    is_liked: bool = False
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+# 장소 목록 응답
+class PlaceListResponse(BaseModel):
+    places: List[PlaceListItemResponse]
+    total_count: int
+    page: int
+    size: int
+
+# 장소 상세 응답
+class PlaceDetailResponse(BaseModel):
+    place_id: int
+    author_id: int
+    author_name: str
+    title: str
+    content: Optional[str] = None
+    address: Optional[str] = None
+    category: str
+    images: List[PlaceImageResponse] = Field(default_factory=list)
+    view_count: int = 0
+    like_count: int = 0
+    review_count: int = 0
+    avg_rating: float = 0.0
+    is_liked: bool = False
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+# 장소 좋아요 응답
+class PlaceLikeResponse(BaseModel):
+    place_id: int
+    is_liked: bool
+    like_count: int
+
+# 리뷰 생성
+class PlaceReviewCreate(BaseModel):
+    rating: int = Field(..., ge=1, le=5, description="별점 1-5")
+    content: str = Field(..., min_length=1, description="리뷰 내용")
+    visit_date: Optional[date] = Field(None, description="방문 날짜")
+
+# 리뷰 수정
+class PlaceReviewUpdate(BaseModel):
+    rating: Optional[int] = Field(None, ge=1, le=5)
+    content: Optional[str] = Field(None, min_length=1)
+    visit_date: Optional[date] = None
+
+# 리뷰 응답
+class PlaceReviewResponse(BaseModel):
+    review_id: int
+    place_id: int
+    author_id: int
+    author_name: str
+    author_profile_image: Optional[str] = None
+    rating: int
+    content: str
+    visit_date: Optional[date] = None
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+# 별점 분포
+class RatingDistribution(BaseModel):
+    five: int = Field(0, alias="5")
+    four: int = Field(0, alias="4")
+    three: int = Field(0, alias="3")
+    two: int = Field(0, alias="2")
+    one: int = Field(0, alias="1")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+# 리뷰 목록 응답
+class PlaceReviewListResponse(BaseModel):
+    reviews: List[PlaceReviewResponse]
+    total_count: int
+    avg_rating: float = 0.0
+    rating_distribution: dict = Field(default_factory=lambda: {"5": 0, "4": 0, "3": 0, "2": 0, "1": 0})
+    page: int
+    size: int
+
+# 내 리뷰 응답 (장소 정보 포함)
+class MyPlaceReviewResponse(BaseModel):
+    review_id: int
+    place_id: int
+    place_title: str
+    rating: int
+    content: str
+    visit_date: Optional[date] = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+class MyPlaceReviewListResponse(BaseModel):
+    reviews: List[MyPlaceReviewResponse]
+    total_count: int
+
+# 이미지 업로드 응답
+class PlaceImageUploadResponse(BaseModel):
+    image_id: int
+    image_url: str
+    upload_order: int

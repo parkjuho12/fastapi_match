@@ -8,10 +8,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # MariaDB 연결 설정 (개발용 기본값, 배포시 환경변수 사용)
-DB_HOST = os.getenv("DB_HOST", "cc.pjhpjh.kr")
+DB_HOST = os.getenv("DB_HOST", "kbu.pjhpjh.kr")
 DB_PORT = os.getenv("DB_PORT", "3306")
-DB_USER = os.getenv("DB_USER", "pjh") 
-DB_PASSWORD = os.getenv("DB_PASSWORD", "qkrwngh2350@")
+DB_USER = os.getenv("DB_USER", "kbu") 
+DB_PASSWORD = os.getenv("DB_PASSWORD", "Qhdks12!@")
 DB_NAME = os.getenv("DB_NAME", "syncup")
 
 # 데이터베이스 URL 구성 (PyMySQL 사용)
